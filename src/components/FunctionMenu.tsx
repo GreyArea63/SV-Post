@@ -1,13 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Menu, Download, Upload, X, Settings } from 'lucide-react';
+import { Download, Upload, X, Settings, Trash2, Database, FileJson, Menu } from 'lucide-react';
 import { Collection } from '../types';
 import { isPostmanCollection, convertPostmanCollection } from '../utils/postmanConverter';
+import { storage } from '../utils/storage';
 
 interface FunctionMenuProps {
   onImport: (collections: Collection[]) => void;
   onExportAll: () => void;
   collections: Collection[];
   onOpenEnvManager: () => void;
+  onOpenJsonBuilder: () => void;
 }
 
 export const FunctionMenu: React.FC<FunctionMenuProps> = ({
@@ -15,6 +17,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
   onExportAll,
   collections,
   onOpenEnvManager,
+  onOpenJsonBuilder,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -27,9 +30,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
         setIsOpen(false);
       }
     };
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
+    if (isOpen) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
@@ -59,8 +60,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       let importedCollections: Collection[] = [];
 
       if (isPostmanCollection(data)) {
-        const converted = convertPostmanCollection(data);
-        importedCollections = [converted];
+        importedCollections = [convertPostmanCollection(data)];
       } else if (data.collections && Array.isArray(data.collections)) {
         importedCollections = data.collections;
       } else if (Array.isArray(data)) {
@@ -68,19 +68,13 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       } else if (data.id && data.name && Array.isArray(data.requests)) {
         importedCollections = [data];
       } else if (data.info && Array.isArray(data.item)) {
-        const converted = convertPostmanCollection(data);
-        importedCollections = [converted];
+        importedCollections = [convertPostmanCollection(data)];
       } else {
         throw new Error('Неверный формат файла');
       }
 
-      const validCollections = importedCollections.filter(
-        (c: any) => c.id && c.name && Array.isArray(c.requests)
-      );
-
-      if (validCollections.length === 0) {
-        throw new Error('Не найдено валидных коллекций');
-      }
+      const validCollections = importedCollections.filter((c: any) => c.id && c.name && Array.isArray(c.requests));
+      if (validCollections.length === 0) throw new Error('Не найдено валидных коллекций');
 
       onImport(validCollections);
       showNotification('success', `Импортировано: ${validCollections.length} колл.`);
@@ -105,64 +99,101 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     }
   };
 
+  const handleShowStorageInfo = async () => {
+    const stats = await storage.getStorageStats();
+    showNotification('info', `IndexedDB: ${(stats.totalSize / 1024).toFixed(1)} KB`);
+    setIsOpen(false);
+  };
+
+  const menuSections = [
+    {
+      title: 'Коллекции',
+      items: [
+        { icon: <Upload size={14} />, label: 'Импорт', description: 'Postman / SV-Post', onClick: handleImportClick },
+        { icon: <Download size={14} />, label: 'Экспорт', description: `${collections.length} колл.`, onClick: handleExportClick, disabled: collections.length === 0 },
+      ]
+    },
+    {
+      title: 'Runner',
+      items: [
+        { icon: <FileJson size={14} />, label: 'Собрать JSON', description: 'Данные для Runner', onClick: () => { setIsOpen(false); onOpenJsonBuilder(); } },
+      ]
+    },
+    {
+      title: 'Настройки',
+      items: [
+        { icon: <Settings size={14} />, label: 'Окружения', description: 'Переменные', onClick: () => { setIsOpen(false); onOpenEnvManager(); } },
+        { icon: <Database size={14} />, label: 'Хранилище', description: 'Статистика', onClick: handleShowStorageInfo },
+      ]
+    },
+    {
+      title: 'Очистка',
+      items: [
+        { icon: <Trash2 size={14} />, label: 'История', description: 'Удалить', danger: true, onClick: () => {
+          if (confirm('Очистить историю?')) {
+            storage.clearHistory();
+            showNotification('success', 'История очищена');
+            setTimeout(() => window.location.reload(), 1000);
+          }
+        }},
+        { icon: <Trash2 size={14} />, label: 'Всё', description: 'Сброс', danger: true, onClick: () => {
+          if (confirm('Удалить ВСЕ данные?')) {
+            storage.clearAllData();
+            showNotification('success', 'Данные очищены');
+            setTimeout(() => window.location.reload(), 1000);
+          }
+        }},
+      ]
+    }
+  ];
+
   return (
     <div className="relative" ref={menuRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-1.5 bg-[#2d2d2d] hover:bg-[#3d3d3d] border border-[#3d3d3d] rounded text-sm transition-colors"
+        className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-xs transition-all ${
+          isOpen 
+            ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' 
+            : 'bg-[#2d2d2d] hover:bg-[#3d3d3d] text-gray-300 border border-[rgba(255,255,255,0.08)]'
+        }`}
       >
-        <Menu size={16} />
+        <Menu size={12} />
         <span>Функции</span>
       </button>
 
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 w-72 bg-[#2d2d2d] border border-[#3d3d3d] rounded shadow-lg z-50 overflow-hidden">
-          <div className="px-3 py-2 border-b border-[#3d3d3d] text-xs text-gray-400 uppercase">
-            Коллекции
-          </div>
-
-          <button
-            onClick={handleImportClick}
-            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#3d3d3d] transition-colors text-left"
-          >
-            <Upload size={16} className="text-primary-500" />
-            <div>
-              <div className="text-sm">Импортировать коллекцию</div>
-              <div className="text-xs text-gray-500">Postman / SV-Post JSON</div>
-            </div>
-          </button>
-
-          <button
-            onClick={handleExportClick}
-            disabled={collections.length === 0}
-            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#3d3d3d] disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-left"
-          >
-            <Download size={16} className="text-primary-500" />
-            <div>
-              <div className="text-sm">Экспортировать коллекции</div>
-              <div className="text-xs text-gray-500">
-                {collections.length > 0 ? `Коллекций: ${collections.length}` : 'Нет коллекций'}
+        <div className="absolute top-full left-0 mt-1 w-64 glass rounded-lg shadow-2xl z-50 overflow-hidden animate-scale-in">
+          {menuSections.map((section, sIdx) => (
+            <div key={sIdx} className={sIdx > 0 ? 'border-t border-[rgba(255,255,255,0.08)]' : ''}>
+              <div className="px-2 py-1.5 text-[9px] font-semibold text-gray-500 uppercase tracking-wider">
+                {section.title}
               </div>
+              {section.items.map((item, iIdx) => (
+                <button
+                  key={iIdx}
+                  onClick={item.onClick}
+                  disabled={item.disabled}
+                  className={`w-full flex items-center gap-2 px-2 py-1.5 transition-all text-left ${
+                    item.disabled 
+                      ? 'opacity-40 cursor-not-allowed' 
+                      : item.danger 
+                        ? 'hover:bg-red-500/10 text-red-400' 
+                        : 'hover:bg-white/5 text-gray-300'
+                  }`}
+                >
+                  <div className={`flex-shrink-0 ${item.danger ? 'text-red-400' : 'text-indigo-400'}`}>
+                    {item.icon}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium">{item.label}</div>
+                    <div className={`text-[10px] ${item.danger ? 'text-red-400/60' : 'text-gray-500'}`}>
+                      {item.description}
+                    </div>
+                  </div>
+                </button>
+              ))}
             </div>
-          </button>
-
-          <div className="px-3 py-2 border-b border-[#3d3d3d] text-xs text-gray-400 uppercase">
-            Настройки
-          </div>
-
-          <button
-            onClick={() => {
-              setIsOpen(false);
-              onOpenEnvManager();
-            }}
-            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#3d3d3d] transition-colors text-left"
-          >
-            <Settings size={16} className="text-primary-500" />
-            <div>
-              <div className="text-sm">Менеджер окружений</div>
-              <div className="text-xs text-gray-500">Управление переменными</div>
-            </div>
-          </button>
+          ))}
         </div>
       )}
 
@@ -175,12 +206,14 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       />
 
       {notification && (
-        <div className={`fixed top-16 left-1/2 transform -translate-x-1/2 px-4 py-2 rounded shadow-lg z-[100] flex items-center gap-2 animate-fade-in ${
-          notification.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'
+        <div className={`fixed top-16 left-1/2 transform -translate-x-1/2 px-3 py-2 rounded-lg shadow-lg z-[100] flex items-center gap-2 animate-fade-in glass ${
+          notification.type === 'success' ? 'border border-emerald-500/30 text-emerald-400' : 
+          notification.type === 'error' ? 'border border-red-500/30 text-red-400' : 
+          'border border-blue-500/30 text-blue-400'
         }`}>
-          <span className="text-sm">{notification.message}</span>
+          <span className="text-xs">{notification.message}</span>
           <button onClick={() => setNotification(null)} className="hover:opacity-70">
-            <X size={14} />
+            <X size={12} />
           </button>
         </div>
       )}

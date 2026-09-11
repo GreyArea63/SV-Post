@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { RequestBuilder } from './components/RequestBuilder';
 import { ResponseViewer } from './components/ResponseViewer';
@@ -6,9 +6,12 @@ import { Sidebar } from './components/Sidebar';
 import { FunctionMenu } from './components/FunctionMenu';
 import { Tabs } from './components/Tabs';
 import { EnvironmentManager } from './components/EnvironmentManager';
+import { CollectionRunner } from './components/CollectionRunner';
+import { JsonBuilder } from './components/JsonBuilder';
 import { HttpRequest, HttpResponse, HistoryItem, Collection, Environment, KeyValuePair } from './types';
 import { storage } from './utils/storage';
 import { generateId, replaceVariables, parseKeyValuePairs } from './utils/helpers';
+import { X, CheckCircle, AlertCircle, Info } from 'lucide-react';
 
 interface Tab {
   id: string;
@@ -16,6 +19,12 @@ interface Tab {
   response: HttpResponse | null;
   loading: boolean;
   error: string | null;
+}
+
+interface Toast {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  message: string;
 }
 
 const DEFAULT_REQUEST: HttpRequest = {
@@ -30,6 +39,8 @@ const DEFAULT_REQUEST: HttpRequest = {
     content: '',
   },
 };
+
+const MAX_TABS = 10;
 
 function App() {
   const [tabs, setTabs] = useState<Tab[]>([
@@ -48,47 +59,63 @@ function App() {
   const [globalVariables, setGlobalVariables] = useState<KeyValuePair[]>([]);
   const [activeEnvId, setActiveEnvId] = useState<string | null>(null);
   const [showEnvManager, setShowEnvManager] = useState(false);
+  const [showJsonBuilder, setShowJsonBuilder] = useState(false);
+  const [runningRequest, setRunningRequest] = useState<{ request: HttpRequest; collectionName: string } | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   
   const [requestHeight, setRequestHeight] = useState<number>(50);
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setCollections(storage.getCollections());
-    setHistory(storage.getHistory());
-    setEnvironments(storage.getEnvironments());
-    setGlobalVariables(storage.getGlobalVariables());
-    setActiveEnvId(storage.getActiveEnvironment());
+  const showToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
+    const id = generateId();
+    setToasts(prev => [...prev, { id, type, message }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
   }, []);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [cols, hist, envs, globals, activeEnv] = await Promise.all([
+          storage.getCollections(),
+          storage.getHistory(),
+          storage.getEnvironments(),
+          storage.getGlobalVariables(),
+          storage.getActiveEnvironment(),
+        ]);
+        setCollections(cols);
+        setHistory(hist);
+        setEnvironments(envs);
+        setGlobalVariables(globals);
+        setActiveEnvId(activeEnv);
+      } catch (error) {
+        console.error('Ошибка загрузки:', error);
+        showToast('error', 'Ошибка загрузки данных');
+      }
+    };
+    loadData();
+  }, [showToast]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing || !containerRef.current) return;
-      
-      const container = containerRef.current;
-      const containerRect = container.getBoundingClientRect();
-      const relativeY = e.clientY - containerRect.top;
-      const containerHeight = containerRect.height;
-      const newPercentage = (relativeY / containerHeight) * 100;
-      
-      if (newPercentage >= 20 && newPercentage <= 80) {
-        setRequestHeight(newPercentage);
-      }
+      const containerHeight = containerRef.current.getBoundingClientRect().height;
+      const newPercentage = ((e.clientY - containerRef.current.getBoundingClientRect().top) / containerHeight) * 100;
+      if (newPercentage >= 20 && newPercentage <= 80) setRequestHeight(newPercentage);
     };
-
     const handleMouseUp = () => {
       setIsResizing(false);
       document.body.style.cursor = 'default';
       document.body.style.userSelect = 'auto';
     };
-
     if (isResizing) {
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
       document.body.style.cursor = 'row-resize';
       document.body.style.userSelect = 'none';
     }
-
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
@@ -149,12 +176,40 @@ function App() {
 
       const headers = parseKeyValuePairs(processedRequest.headers);
 
+      // Обработка авторизации
       if (processedRequest.auth) {
-        if (processedRequest.auth.type === 'bearer' && processedRequest.auth.token) {
-          headers['Authorization'] = `Bearer ${processedRequest.auth.token}`;
-        } else if (processedRequest.auth.type === 'basic' && processedRequest.auth.username) {
-          const credentials = btoa(`${processedRequest.auth.username}:${processedRequest.auth.password || ''}`);
-          headers['Authorization'] = `Basic ${credentials}`;
+        switch (processedRequest.auth.type) {
+          case 'bearer':
+            if (processedRequest.auth.token) {
+              headers['Authorization'] = `Bearer ${processedRequest.auth.token}`;
+            }
+            break;
+          case 'basic':
+            if (processedRequest.auth.username) {
+              const credentials = btoa(`${processedRequest.auth.username}:${processedRequest.auth.password || ''}`);
+              headers['Authorization'] = `Basic ${credentials}`;
+            }
+            break;
+          case 'apikey':
+            if (processedRequest.auth.apiKey && processedRequest.auth.apiValue) {
+              if (processedRequest.auth.addTo === 'header') {
+                headers[processedRequest.auth.apiKey] = processedRequest.auth.apiValue;
+              } else if (processedRequest.auth.addTo === 'queryParams') {
+                const searchParams = new URLSearchParams(url.split('?')[1] || '');
+                searchParams.set(processedRequest.auth.apiKey, processedRequest.auth.apiValue);
+                url += (url.includes('?') ? '&' : '?') + searchParams.toString();
+              }
+            }
+            break;
+          case 'oauth2':
+            if (processedRequest.auth.accessToken) {
+              headers['Authorization'] = `${processedRequest.auth.tokenType || 'Bearer'} ${processedRequest.auth.accessToken}`;
+            }
+            break;
+          case 'noauth':
+          case 'none':
+            // Нет авторизации
+            break;
         }
       }
 
@@ -204,7 +259,8 @@ function App() {
       
       const newHistory = [historyItem, ...history].slice(0, 100);
       setHistory(newHistory);
-      storage.saveHistory(newHistory);
+      await storage.saveHistory(newHistory);
+      showToast('success', `Запрос выполнен: ${httpResponse.status}`);
 
     } catch (err: any) {
       if (err.response) {
@@ -222,12 +278,14 @@ function App() {
             ? { ...tab, loading: false, response: httpResponse, error: null }
             : tab
         ));
+        showToast('error', `Ошибка: ${httpResponse.status}`);
       } else {
         setTabs(tabs.map(tab => 
           tab.id === activeTabId 
             ? { ...tab, loading: false, error: err.message || 'Произошла ошибка при отправке запроса' }
             : tab
         ));
+        showToast('error', err.message || 'Ошибка соединения');
       }
     }
   };
@@ -243,7 +301,10 @@ function App() {
   };
 
   const handleNewTab = () => {
-    if (tabs.length >= 10) return;
+    if (tabs.length >= MAX_TABS) {
+      showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
+      return;
+    }
     const newTab: Tab = {
       id: generateId(),
       request: { ...DEFAULT_REQUEST, id: generateId() },
@@ -255,10 +316,9 @@ function App() {
     setActiveTabId(newTab.id);
   };
 
-  // НОВАЯ ФУНКЦИЯ: создание вкладки с конкретным методом
   const handleMethodChange = (newMethod: string) => {
-    if (tabs.length >= 10) {
-      alert('Достигнут лимит в 10 вкладок. Закройте одну из вкладок.');
+    if (tabs.length >= MAX_TABS) {
+      showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок. Закройте одну из вкладок.`);
       return;
     }
 
@@ -268,6 +328,7 @@ function App() {
         ...DEFAULT_REQUEST,
         id: generateId(),
         method: newMethod,
+        name: `New ${newMethod} Request`,
       },
       response: null,
       loading: false,
@@ -276,6 +337,7 @@ function App() {
 
     setTabs([...tabs, newTab]);
     setActiveTabId(newTab.id);
+    showToast('info', `Создана новая вкладка: ${newMethod}`);
   };
 
   const handleRequestChange = (request: HttpRequest) => {
@@ -284,7 +346,7 @@ function App() {
     ));
   };
 
-  const handleAddCollection = () => {
+  const handleAddCollection = async () => {
     const name = prompt('Название коллекции:');
     if (name) {
       const newCollection: Collection = {
@@ -294,18 +356,20 @@ function App() {
       };
       const newCollections = [...collections, newCollection];
       setCollections(newCollections);
-      storage.saveCollections(newCollections);
+      await storage.saveCollections(newCollections);
+      showToast('success', `Коллекция "${name}" создана`);
     }
   };
 
-  const handleImportCollections = (importedCollections: Collection[]) => {
+  const handleImportCollections = async (importedCollections: Collection[]) => {
     const existingIds = new Set(collections.map(c => c.id));
     const newCollections = importedCollections.map(c => 
       existingIds.has(c.id) ? { ...c, id: generateId() } : c
     );
     const updated = [...collections, ...newCollections];
     setCollections(updated);
-    storage.saveCollections(updated);
+    await storage.saveCollections(updated);
+    showToast('success', `Импортировано коллекций: ${newCollections.length}`);
   };
 
   const handleExportAllCollections = () => {
@@ -325,40 +389,98 @@ function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    showToast('success', 'Коллекции экспортированы');
   };
 
   const handleSelectRequest = (collectionId: string, requestId: string) => {
     const collection = collections.find(c => c.id === collectionId);
     const request = collection?.requests.find(r => r.id === requestId);
-    if (request && activeTab) {
-      handleRequestChange(request);
+    
+    if (request) {
+      const isEmptyTab = activeTab && 
+        activeTab.request.name === 'New Request' && 
+        activeTab.request.url === '' &&
+        activeTab.response === null;
+      
+      if (isEmptyTab) {
+        handleRequestChange(request);
+      } else {
+        if (tabs.length >= MAX_TABS) {
+          showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
+          return;
+        }
+        
+        const newTab: Tab = {
+          id: generateId(),
+          request: { ...request, id: generateId() },
+          response: null,
+          loading: false,
+          error: null,
+        };
+        
+        setTabs([...tabs, newTab]);
+        setActiveTabId(newTab.id);
+      }
+      
+      showToast('info', `Загружен запрос: ${request.name}`);
     }
   };
 
   const handleSelectHistory = (item: HistoryItem) => {
-    if (activeTab) {
+    const isEmptyTab = activeTab && 
+      activeTab.request.name === 'New Request' && 
+      activeTab.request.url === '' &&
+      activeTab.response === null;
+    
+    if (isEmptyTab) {
       handleRequestChange(item.request);
       setTabs(tabs.map(tab => 
         tab.id === activeTabId ? { ...tab, response: item.response } : tab
       ));
+    } else {
+      if (tabs.length >= MAX_TABS) {
+        showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
+        return;
+      }
+      
+      const newTab: Tab = {
+        id: generateId(),
+        request: { ...item.request, id: generateId() },
+        response: item.response,
+        loading: false,
+        error: null,
+      };
+      
+      setTabs([...tabs, newTab]);
+      setActiveTabId(newTab.id);
     }
+    
+    showToast('info', 'Запрос из истории загружен');
   };
 
-  const handleSaveEnvironments = (envs: Environment[], globals: KeyValuePair[]) => {
+  const handleRunRequest = (request: HttpRequest, collectionName: string) => {
+    setRunningRequest({ request, collectionName });
+  };
+
+  const handleSaveEnvironments = async (envs: Environment[], globals: KeyValuePair[]) => {
     setEnvironments(envs);
     setGlobalVariables(globals);
-    storage.saveEnvironments(envs);
-    storage.saveGlobalVariables(globals);
+    await Promise.all([
+      storage.saveEnvironments(envs),
+      storage.saveGlobalVariables(globals),
+    ]);
+    showToast('success', 'Окружения сохранены');
   };
 
-  const handleImportEnvironments = (envs: Environment[]) => {
+  const handleImportEnvironments = async (envs: Environment[]) => {
     const existingIds = new Set(environments.map(e => e.id));
     const newEnvs = envs.map(e => 
       existingIds.has(e.id) ? { ...e, id: generateId() } : e
     );
     const updated = [...environments, ...newEnvs];
     setEnvironments(updated);
-    storage.saveEnvironments(updated);
+    await storage.saveEnvironments(updated);
+    showToast('success', `Импортировано окружений: ${newEnvs.length}`);
   };
 
   const handleExportEnvironments = (envs: Environment[], globals: KeyValuePair[]) => {
@@ -380,39 +502,41 @@ function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    showToast('success', 'Окружения экспортированы');
   };
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      {/* Header - 48px */}
-      <div className="h-12 bg-[#1e1e1e] border-b border-[#3d3d3d] flex items-center px-4 gap-3 shrink-0">
+      {/* Header — узкий, 32px */}
+      <div className="h-8 bg-gradient-to-r from-[#1a1a23] to-[#0f0f14] border-b border-[rgba(255,255,255,0.08)] flex items-center px-3 gap-2 shrink-0">
         <FunctionMenu
           onImport={handleImportCollections}
           onExportAll={handleExportAllCollections}
           collections={collections}
           onOpenEnvManager={() => setShowEnvManager(true)}
+          onOpenJsonBuilder={() => setShowJsonBuilder(true)}
         />
 
-        <div className="h-6 w-px bg-[#3d3d3d]" />
+        <div className="h-4 w-px bg-[rgba(255,255,255,0.1)]" />
 
-        <h1 className="text-lg font-bold text-primary-500">SV-Post</h1>
+        <h1 className="text-sm font-bold gradient-text">SV-Post</h1>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2">
           {activeEnvId && (
-            <span className="text-xs text-gray-400">
-              Окружение: <span className="text-primary-500 font-medium">
-                {environments.find(e => e.id === activeEnvId)?.name || '—'}
-              </span>
+            <span className="text-[10px] text-gray-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+              <span className="text-gray-300">{environments.find(e => e.id === activeEnvId)?.name}</span>
             </span>
           )}
           <select
             value={activeEnvId || ''}
-            onChange={(e) => {
+            onChange={async (e) => {
               const envId = e.target.value || null;
               setActiveEnvId(envId);
-              storage.setActiveEnvironment(envId);
+              await storage.setActiveEnvironment(envId);
+              showToast('info', envId ? 'Окружение изменено' : 'Окружение отключено');
             }}
-            className="px-3 py-1 bg-[#2d2d2d] border border-[#3d3d3d] rounded text-sm"
+            className="h-[24px] px-2 bg-[#2d2d2d] hover:bg-[#3d3d3d] border border-[rgba(255,255,255,0.08)] rounded text-[11px] text-gray-300 focus:outline-none focus:border-indigo-500/50 transition-all cursor-pointer"
           >
             <option value="">Нет окружения</option>
             {environments.map(env => (
@@ -421,28 +545,29 @@ function App() {
           </select>
           <button
             onClick={() => setShowEnvManager(true)}
-            className="px-3 py-1 bg-[#2d2d2d] hover:bg-[#3d3d3d] border border-[#3d3d3d] rounded text-sm transition-colors"
+            className="h-[24px] w-[24px] flex items-center justify-center bg-[#2d2d2d] hover:bg-[#3d3d3d] border border-[rgba(255,255,255,0.08)] rounded transition-all"
             title="Менеджер окружений"
           >
-            ⚙️
+            <svg className="w-3 h-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
           </button>
         </div>
       </div>
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar - 280px */}
         <Sidebar
           collections={collections}
           history={history}
           onSelectRequest={handleSelectRequest}
           onSelectHistory={handleSelectHistory}
           onAddCollection={handleAddCollection}
+          onRunRequest={handleRunRequest}
         />
 
-        {/* Main Area */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Tabs - 38px */}
           <Tabs
             tabs={tabs}
             activeTabId={activeTabId}
@@ -451,9 +576,7 @@ function App() {
             onNewTab={handleNewTab}
           />
 
-          {/* Resizable Content Area */}
           <div className="flex-1 flex flex-col overflow-hidden" ref={containerRef}>
-            {/* Request Builder - верхняя часть */}
             <div 
               className="flex flex-col min-h-0"
               style={{ height: `${requestHeight}%` }}
@@ -474,16 +597,14 @@ function App() {
               )}
             </div>
 
-            {/* Resizable Divider - 4px */}
             <div
-              className={`h-1 bg-[#3d3d3d] resize-handle shrink-0 ${isResizing ? 'active' : ''}`}
+              className={`h-1 bg-[rgba(255,255,255,0.05)] resize-handle shrink-0 ${isResizing ? 'active' : ''}`}
               onMouseDown={(e) => {
                 e.preventDefault();
                 setIsResizing(true);
               }}
             />
 
-            {/* Response Viewer - нижняя часть */}
             <div 
               className="flex flex-col min-h-0"
               style={{ height: `${100 - requestHeight}%` }}
@@ -500,18 +621,60 @@ function App() {
         </div>
       </div>
 
-      {/* Environment Manager Modal */}
       {showEnvManager && (
         <EnvironmentManager
           environments={environments}
           globalVariables={globalVariables}
           activeEnvId={activeEnvId}
+          collections={collections}
           onClose={() => setShowEnvManager(false)}
           onSave={handleSaveEnvironments}
           onImport={handleImportEnvironments}
           onExport={handleExportEnvironments}
         />
       )}
+
+      {showJsonBuilder && (
+        <JsonBuilder
+          onClose={() => setShowJsonBuilder(false)}
+        />
+      )}
+
+      {runningRequest && (
+        <CollectionRunner
+          requests={[runningRequest.request]}
+          collectionName={runningRequest.collectionName}
+          environments={environments}
+          activeEnvId={activeEnvId}
+          globalVariables={globalVariables}
+          onClose={() => setRunningRequest(null)}
+        />
+      )}
+
+      {/* Toast Notifications */}
+      <div className="fixed top-16 right-4 z-[300] space-y-2">
+        {toasts.map(toast => (
+          <div
+            key={toast.id}
+            className={`toast flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg min-w-[300px] ${
+              toast.type === 'success' ? 'bg-green-500/20 border border-green-500/30 text-green-400' :
+              toast.type === 'error' ? 'bg-red-500/20 border border-red-500/30 text-red-400' :
+              'bg-blue-500/20 border border-blue-500/30 text-blue-400'
+            }`}
+          >
+            {toast.type === 'success' && <CheckCircle size={18} />}
+            {toast.type === 'error' && <AlertCircle size={18} />}
+            {toast.type === 'info' && <Info size={18} />}
+            <span className="flex-1 text-sm">{toast.message}</span>
+            <button
+              onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+              className="hover:opacity-70"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

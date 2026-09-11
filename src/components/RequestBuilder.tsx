@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
-import { Send, Plus, Trash2, AlertCircle, CheckCircle, Save, Share2, Code, Database } from 'lucide-react';
-import { HttpRequest, KeyValuePair, RequestBody, Environment, Collection } from '../types';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { Send, Plus, Trash2, AlertCircle, CheckCircle, Save, Share2, Code, Database, Key, Lock, User, Globe, RefreshCw } from 'lucide-react';
+import { HttpRequest, KeyValuePair, RequestBody, Environment, Collection, RequestAuth } from '../types';
 import { generateId, findVariablesInText, isVariableResolved } from '../utils/helpers';
 import { JsonEditor } from './JsonEditor';
 import { SchemaEditor } from './SchemaEditor';
@@ -14,20 +14,20 @@ interface RequestBuilderProps {
   activeEnvId: string | null;
   globalVariables: KeyValuePair[];
   collections: Collection[];
-  onMethodChange: (newMethod: string) => void; // НОВАЯ ПРОПСА
-  tabCount: number; // НОВАЯ ПРОПСА
+  onMethodChange: (newMethod: string) => void;
+  tabCount: number;
 }
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
 const METHOD_COLORS: Record<string, string> = {
-  GET: 'text-green-500',
-  POST: 'text-yellow-500',
-  PUT: 'text-blue-500',
-  PATCH: 'text-purple-500',
-  DELETE: 'text-red-500',
-  HEAD: 'text-gray-500',
-  OPTIONS: 'text-orange-500',
+  GET: 'text-emerald-400',
+  POST: 'text-amber-400',
+  PUT: 'text-blue-400',
+  PATCH: 'text-purple-400',
+  DELETE: 'text-red-400',
+  HEAD: 'text-gray-400',
+  OPTIONS: 'text-orange-400',
 };
 
 export const RequestBuilder: React.FC<RequestBuilderProps> = ({
@@ -46,6 +46,14 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   const [showSchemaEditor, setShowSchemaEditor] = useState(false);
   const [jsonFormat, setJsonFormat] = useState<'JSON' | 'XML' | 'Text'>('JSON');
   const [bodySchema, setBodySchema] = useState<string>('');
+  
+  const currentMethodRef = useRef(request.method);
+  const [selectedMethod, setSelectedMethod] = useState(request.method);
+
+  useEffect(() => {
+    currentMethodRef.current = request.method;
+    setSelectedMethod(request.method);
+  }, [request.id]);
 
   const activeEnv = environments.find(e => e.id === activeEnvId);
   const envVariables = activeEnv?.variables || [];
@@ -65,10 +73,10 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   }, [request]);
 
   const variableStatus = useMemo(() => {
-    return usedVariables.map(name => {
-      const status = isVariableResolved(name, envVariables, globalVariables);
-      return { name, ...status };
-    });
+    return usedVariables.map(name => ({
+      name,
+      ...isVariableResolved(name, envVariables, globalVariables),
+    }));
   }, [usedVariables, envVariables, globalVariables]);
 
   const updateKeyValuePair = (
@@ -114,22 +122,15 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
     }
   };
 
-  const handleApplyExample = (example: string) => {
-    updateBody({ ...request.body, content: example });
-    setShowSchemaEditor(false);
-  };
-
-  const handleSaveSchema = (schema: string) => {
-    setBodySchema(schema);
-  };
-
-  // НОВАЯ ФУНКЦИЯ: обработка смены метода
   const handleMethodSelect = (newMethod: string) => {
-    // Если метод не изменился - ничего не делаем
-    if (newMethod === request.method) return;
-    
-    // Создаем новую вкладку с выбранным методом
+    if (newMethod === currentMethodRef.current) return;
+    setSelectedMethod(currentMethodRef.current);
     onMethodChange(newMethod);
+  };
+
+  // Обновление авторизации
+  const updateAuth = (newAuth: RequestAuth) => {
+    onChange({ ...request, auth: newAuth });
   };
 
   const currentCollection = collections.find(c => 
@@ -145,123 +146,128 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
     { value: 'graphql', label: 'GraphQL' },
   ] as const;
 
+  const authTypes = [
+    { value: 'noauth', label: 'No Auth', icon: <Lock size={14} /> },
+    { value: 'bearer', label: 'Bearer Token', icon: <Key size={14} /> },
+    { value: 'basic', label: 'Basic Auth', icon: <User size={14} /> },
+    { value: 'apikey', label: 'API Key', icon: <Key size={14} /> },
+    { value: 'oauth2', label: 'OAuth 2.0', icon: <RefreshCw size={14} /> },
+  ];
+
+  const currentAuth = request.auth || { type: 'noauth' };
+
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Top Bar - Collection name, Save, Share */}
-      <div className="h-[40px] flex items-center justify-between px-4 bg-[#1e1e1e] border-b border-[#3d3d3d] shrink-0">
+      {/* Top Bar */}
+      <div className="h-[40px] flex items-center justify-between px-4 bg-[#1a1a23] border-b border-[rgba(255,255,255,0.08)] shrink-0">
         <div className="flex items-center gap-2 text-sm">
           {currentCollection ? (
             <>
-              <span className="text-gray-400">{currentCollection.name}</span>
+              <span className="text-gray-500">{currentCollection.name}</span>
               <span className="text-gray-600">›</span>
               <span className="text-gray-200 font-medium">{request.name}</span>
             </>
           ) : (
-            <span className="text-gray-400">New Request</span>
+            <span className="text-gray-500">New Request</span>
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            className="flex items-center gap-1.5 px-3 py-1.5 text-gray-300 hover:bg-[#2d2d2d] rounded text-sm transition-colors"
-            title="Save request"
-          >
+          <button className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg text-sm transition-all">
             <Save size={14} />
             <span>Save</span>
           </button>
-          <button
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2d2d2d] hover:bg-[#3d3d3d] rounded text-sm transition-colors"
-            title="Share"
-          >
+          <button className="flex items-center gap-1.5 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-sm transition-all text-gray-300">
             <Share2 size={14} />
             <span>Share</span>
           </button>
         </div>
       </div>
 
-      {/* URL Bar - 44px */}
-      <div className="h-[44px] flex gap-2 px-4 bg-[#252525] border-b border-[#3d3d3d] shrink-0">
+      {/* URL Bar */}
+      <div className="h-[44px] flex gap-2 px-4 bg-[#252532] border-b border-[rgba(255,255,255,0.08)] shrink-0 items-center">
         <select
-          value={request.method}
+          value={selectedMethod}
           onChange={(e) => handleMethodSelect(e.target.value)}
-          className={`px-3 py-1.5 bg-[#2d2d2d] border border-[#3d3d3d] rounded font-bold text-sm ${METHOD_COLORS[request.method]}`}
-          title={tabCount >= 10 ? 'Достигнут лимит в 10 вкладок' : 'Смена метода создаст новую вкладку'}
+          className={`h-[32px] px-3 bg-[#1a1a23] border border-[rgba(255,255,255,0.08)] rounded-lg font-bold text-sm ${METHOD_COLORS[selectedMethod]} cursor-pointer hover:border-[rgba(255,255,255,0.15)] transition-all focus:outline-none focus:border-indigo-500/50`}
+          title={`Выбор нового метода создаст новую вкладку (макс. 10)`}
         >
           {HTTP_METHODS.map(method => (
             <option key={method} value={method}>{method}</option>
           ))}
         </select>
+        
         <input
           type="text"
           value={request.url}
           onChange={(e) => onChange({ ...request, url: e.target.value })}
           placeholder="https://api.example.com/endpoint или {{base_url}}/endpoint"
-          className="flex-1 px-3 py-1.5 bg-[#2d2d2d] border border-[#3d3d3d] rounded focus:outline-none focus:border-primary-500 font-mono text-sm"
+          className="flex-1 h-[32px] px-3 bg-[#1a1a23] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 font-mono text-sm text-gray-300 transition-all placeholder:text-gray-600"
           onKeyDown={(e) => e.key === 'Enter' && onSend()}
         />
+        
         <button
           onClick={onSend}
           disabled={loading}
-          className="px-4 py-1.5 bg-primary-600 hover:bg-primary-700 disabled:bg-gray-600 text-white rounded font-medium flex items-center gap-2 transition-colors text-sm"
+          className="h-[32px] px-4 bg-gradient-to-b from-blue-500 to-blue-700 hover:from-blue-400 hover:to-blue-600 rounded-lg text-sm transition-all text-white flex items-center gap-1.5 font-medium disabled:opacity-50 shadow-lg shadow-blue-500/30 border border-blue-400/30 active:translate-y-0.5"
         >
           <Send size={14} />
-          {loading ? '...' : 'Send'}
+          <span>{loading ? '...' : 'Send'}</span>
         </button>
       </div>
 
-      {/* Tabs - 36px */}
-      <div className="h-[36px] flex items-center gap-1 px-4 border-b border-[#3d3d3d] bg-[#252525] shrink-0">
+      {/* Tabs */}
+      <div className="h-[26px] flex items-center gap-0 px-1 border-b border-[rgba(255,255,255,0.08)] bg-[#1a1a23] shrink-0">
         {(['docs', 'params', 'authorization', 'headers', 'body', 'scripts', 'settings'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-3 py-1.5 font-medium transition-colors text-xs rounded ${
+            className={`px-2 py-0.5 font-medium transition-all text-[11px] rounded ${
               activeTab === tab
-                ? 'text-primary-500 bg-primary-500/10'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-[#2d2d2d]'
+                ? 'text-indigo-400 bg-indigo-500/10'
+                : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
             }`}
           >
             {tab === 'docs' && (
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+              <span className="flex items-center gap-1">
+                <span className="w-1 h-1 rounded-full bg-emerald-500"></span>
                 Docs
               </span>
             )}
             {tab === 'params' && 'Params'}
-            {tab === 'authorization' && 'Authorization'}
+            {tab === 'authorization' && 'Auth'}
             {tab === 'headers' && `Headers (${request.headers.length})`}
             {tab === 'body' && 'Body'}
             {tab === 'scripts' && (
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+              <span className="flex items-center gap-1">
+                <span className="w-1 h-1 rounded-full bg-emerald-500"></span>
                 Scripts
               </span>
             )}
             {tab === 'settings' && 'Settings'}
           </button>
         ))}
-        
-        <div className="ml-auto flex items-center gap-2">
-          <button className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors">
+        <div className="ml-auto">
+          <button className="px-2 py-0.5 text-[11px] text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded transition-all">
             Cookies
           </button>
         </div>
       </div>
 
-      {/* Variable Status Bar - 28px */}
+      {/* Variable Status Bar */}
       {variableStatus.length > 0 && activeTab === 'body' && (
-        <div className="h-[28px] px-4 bg-[#1e1e1e] border-b border-[#3d3d3d] flex items-center gap-2 overflow-x-auto shrink-0">
-          <span className="text-[11px] text-gray-500 whitespace-nowrap">Переменные:</span>
+        <div className="h-[24px] px-4 bg-[#1a1a23] border-b border-[rgba(255,255,255,0.08)] flex items-center gap-2 overflow-x-auto shrink-0">
+          <span className="text-[9px] text-gray-500 whitespace-nowrap">Переменные:</span>
           {variableStatus.map(v => (
             <span
               key={v.name}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] whitespace-nowrap ${
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] whitespace-nowrap ${
                 v.resolved
-                  ? 'bg-green-500/10 text-green-500'
-                  : 'bg-red-500/10 text-red-500'
+                  ? 'bg-emerald-500/10 text-emerald-400'
+                  : 'bg-red-500/10 text-red-400'
               }`}
-              title={v.resolved ? `Значение: ${v.value}` : 'Переменная не определена'}
+              title={v.resolved ? `Значение: ${v.value}` : 'Не определена'}
             >
-              {v.resolved ? <CheckCircle size={10} /> : <AlertCircle size={10} />}
+              {v.resolved ? <CheckCircle size={8} /> : <AlertCircle size={8} />}
               {`{{${v.name}}}`}
             </span>
           ))}
@@ -270,26 +276,15 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
 
       {/* Tab Content */}
       <div className="flex-1 overflow-auto p-4 min-h-0">
-        {activeTab === 'docs' && (
-          <div className="text-gray-400 text-sm text-center py-8">
-            <p className="mb-2">📚 Documentation</p>
-            <p>Добавьте документацию к вашему запросу</p>
-          </div>
-        )}
-
         {activeTab === 'params' && (
           <KeyValueEditor
             items={request.queryParams}
             onUpdate={(id, key, value) => updateKeyValuePair('queryParams', id, key, value)}
             onAdd={() => addKeyValuePair('queryParams')}
             onRemove={(id) => removeKeyValuePair('queryParams', id)}
-            keyPlaceholder="Parameter name"
+            keyPlaceholder="Parameter"
             valuePlaceholder="Value"
           />
-        )}
-
-        {activeTab === 'authorization' && (
-          <AuthEditor request={request} onChange={onChange} />
         )}
 
         {activeTab === 'headers' && (
@@ -298,17 +293,299 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
             onUpdate={(id, key, value) => updateKeyValuePair('headers', id, key, value)}
             onAdd={() => addKeyValuePair('headers')}
             onRemove={(id) => removeKeyValuePair('headers', id)}
-            keyPlaceholder="Header name"
+            keyPlaceholder="Header"
             valuePlaceholder="Value"
           />
         )}
 
+        {activeTab === 'authorization' && (
+          <div className="flex flex-col h-full min-h-0">
+            {/* Выбор типа авторизации */}
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Тип авторизации</label>
+              <div className="grid grid-cols-5 gap-2">
+                {authTypes.map(authType => (
+                  <button
+                    key={authType.value}
+                    onClick={() => updateAuth({ type: authType.value as RequestAuth['type'] })}
+                    className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border transition-all ${
+                      currentAuth.type === authType.value
+                        ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
+                        : 'bg-[#252532] border-[rgba(255,255,255,0.08)] text-gray-400 hover:border-[rgba(255,255,255,0.15)] hover:text-gray-300'
+                    }`}
+                  >
+                    {authType.icon}
+                    <span className="text-[10px] font-medium text-center">{authType.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* No Auth */}
+            {currentAuth.type === 'noauth' && (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="text-center text-gray-500">
+                  <Lock size={48} className="mx-auto mb-3 opacity-30" />
+                  <p className="text-sm">Этот запрос не использует авторизацию</p>
+                </div>
+              </div>
+            )}
+
+            {/* Bearer Token */}
+            {currentAuth.type === 'bearer' && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Token</label>
+                  <input
+                    type="text"
+                    value={currentAuth.token || ''}
+                    onChange={(e) => updateAuth({ ...currentAuth, token: e.target.value })}
+                    placeholder="Введите Bearer токен"
+                    className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                  />
+                </div>
+                <div className="p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
+                  <p className="text-xs text-indigo-400">
+                    <strong>Предпросмотр:</strong> Заголовок <code className="px-1 py-0.5 bg-black/30 rounded">Authorization: Bearer {currentAuth.token || '{{token}}'}</code> будет добавлен к запросу
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Basic Auth */}
+            {currentAuth.type === 'basic' && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Username</label>
+                  <input
+                    type="text"
+                    value={currentAuth.username || ''}
+                    onChange={(e) => updateAuth({ ...currentAuth, username: e.target.value })}
+                    placeholder="Username"
+                    className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Password</label>
+                  <input
+                    type="password"
+                    value={currentAuth.password || ''}
+                    onChange={(e) => updateAuth({ ...currentAuth, password: e.target.value })}
+                    placeholder="Password"
+                    className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600"
+                  />
+                </div>
+                {currentAuth.username && (
+                  <div className="p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
+                    <p className="text-xs text-indigo-400">
+                      <strong>Предпросмотр:</strong> Заголовок <code className="px-1 py-0.5 bg-black/30 rounded">Authorization: Basic {btoa(`${currentAuth.username}:${currentAuth.password || ''}`).substring(0, 20)}...</code> будет добавлен к запросу
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* API Key */}
+            {currentAuth.type === 'apikey' && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Key</label>
+                  <input
+                    type="text"
+                    value={currentAuth.apiKey || ''}
+                    onChange={(e) => updateAuth({ ...currentAuth, apiKey: e.target.value })}
+                    placeholder="Например: X-API-Key"
+                    className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Value</label>
+                  <input
+                    type="text"
+                    value={currentAuth.apiValue || ''}
+                    onChange={(e) => updateAuth({ ...currentAuth, apiValue: e.target.value })}
+                    placeholder="Значение API ключа"
+                    className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Добавить в</label>
+                  <div className="flex gap-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        checked={currentAuth.addTo === 'header'}
+                        onChange={() => updateAuth({ ...currentAuth, addTo: 'header' })}
+                        className="w-3.5 h-3.5"
+                      />
+                      <span className="text-sm text-gray-300">Header</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        checked={currentAuth.addTo === 'queryParams'}
+                        onChange={() => updateAuth({ ...currentAuth, addTo: 'queryParams' })}
+                        className="w-3.5 h-3.5"
+                      />
+                      <span className="text-sm text-gray-300">Query Params</span>
+                    </label>
+                  </div>
+                </div>
+                {currentAuth.apiKey && currentAuth.apiValue && (
+                  <div className="p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
+                    <p className="text-xs text-indigo-400">
+                      <strong>Предпросмотр:</strong> {currentAuth.addTo === 'header' 
+                        ? <code className="px-1 py-0.5 bg-black/30 rounded">{currentAuth.apiKey}: {currentAuth.apiValue}</code>
+                        : <code className="px-1 py-0.5 bg-black/30 rounded">?{currentAuth.apiKey}={currentAuth.apiValue}</code>
+                      } будет добавлен к запросу
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* OAuth 2.0 */}
+            {currentAuth.type === 'oauth2' && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Grant Type</label>
+                  <select
+                    value={currentAuth.grantType || 'authorization_code'}
+                    onChange={(e) => updateAuth({ ...currentAuth, grantType: e.target.value })}
+                    className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all"
+                  >
+                    <option value="authorization_code">Authorization Code</option>
+                    <option value="implicit">Implicit</option>
+                    <option value="password_credentials">Password Credentials</option>
+                    <option value="client_credentials">Client Credentials</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Callback URL</label>
+                    <input
+                      type="text"
+                      value={currentAuth.callbackUrl || ''}
+                      onChange={(e) => updateAuth({ ...currentAuth, callbackUrl: e.target.value })}
+                      placeholder="https://localhost/callback"
+                      className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Auth URL</label>
+                    <input
+                      type="text"
+                      value={currentAuth.authUrl || ''}
+                      onChange={(e) => updateAuth({ ...currentAuth, authUrl: e.target.value })}
+                      placeholder="https://auth.example.com/authorize"
+                      className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Access Token URL</label>
+                    <input
+                      type="text"
+                      value={currentAuth.accessTokenUrl || ''}
+                      onChange={(e) => updateAuth({ ...currentAuth, accessTokenUrl: e.target.value })}
+                      placeholder="https://auth.example.com/token"
+                      className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Client ID</label>
+                    <input
+                      type="text"
+                      value={currentAuth.clientId || ''}
+                      onChange={(e) => updateAuth({ ...currentAuth, clientId: e.target.value })}
+                      placeholder="client_id"
+                      className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Client Secret</label>
+                    <input
+                      type="password"
+                      value={currentAuth.clientSecret || ''}
+                      onChange={(e) => updateAuth({ ...currentAuth, clientSecret: e.target.value })}
+                      placeholder="client_secret"
+                      className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Scope</label>
+                    <input
+                      type="text"
+                      value={currentAuth.scope || ''}
+                      onChange={(e) => updateAuth({ ...currentAuth, scope: e.target.value })}
+                      placeholder="read write"
+                      className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">State</label>
+                    <input
+                      type="text"
+                      value={currentAuth.state || ''}
+                      onChange={(e) => updateAuth({ ...currentAuth, state: e.target.value })}
+                      placeholder="random_state"
+                      className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Token Type</label>
+                    <input
+                      type="text"
+                      value={currentAuth.tokenType || 'Bearer'}
+                      onChange={(e) => updateAuth({ ...currentAuth, tokenType: e.target.value })}
+                      placeholder="Bearer"
+                      className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Access Token</label>
+                  <input
+                    type="text"
+                    value={currentAuth.accessToken || ''}
+                    onChange={(e) => updateAuth({ ...currentAuth, accessToken: e.target.value })}
+                    placeholder="Введите или получите токен"
+                    className="w-full px-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600 font-mono"
+                  />
+                </div>
+
+                <button className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-all">
+                  <RefreshCw size={14} />
+                  Get New Access Token
+                </button>
+
+                {currentAuth.accessToken && (
+                  <div className="p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
+                    <p className="text-xs text-indigo-400">
+                      <strong>Предпросмотр:</strong> Заголовок <code className="px-1 py-0.5 bg-black/30 rounded">Authorization: {currentAuth.tokenType || 'Bearer'} {currentAuth.accessToken.substring(0, 20)}...</code> будет добавлен к запросу
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'body' && (
           <div className="flex flex-col h-full min-h-0">
-            {/* Radio buttons для выбора типа body */}
-            <div className="flex items-center gap-5 pb-3 border-b border-[#3d3d3d] mb-3 shrink-0">
+            <div className="flex items-center gap-4 pb-2 border-b border-[rgba(255,255,255,0.08)] mb-3 shrink-0">
               {bodyTypes.map(type => (
-                <label key={type.value} className="flex items-center gap-2 cursor-pointer group">
+                <label key={type.value} className="flex items-center gap-1.5 cursor-pointer group">
                   <div className="relative flex items-center justify-center">
                     <input
                       type="radio"
@@ -317,18 +594,20 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                       onChange={() => updateBody({ ...request.body, type: type.value })}
                       className="sr-only"
                     />
-                    <div className={`w-3.5 h-3.5 rounded-full border-2 transition-all ${
+                    <div className={`w-3 h-3 rounded-full border-2 transition-all ${
                       request.body.type === type.value
-                        ? 'border-primary-500'
-                        : 'border-gray-500 group-hover:border-gray-400'
+                        ? 'border-indigo-500'
+                        : 'border-gray-600 group-hover:border-gray-400'
                     }`}>
                       {request.body.type === type.value && (
-                        <div className="w-2 h-2 rounded-full bg-primary-500 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
+                        <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
                       )}
                     </div>
                   </div>
-                  <span className={`text-sm ${
-                    request.body.type === type.value ? 'text-gray-200 font-medium' : 'text-gray-400 group-hover:text-gray-300'
+                  <span className={`text-xs ${
+                    request.body.type === type.value
+                      ? 'text-gray-200 font-medium'
+                      : 'text-gray-400 group-hover:text-gray-300'
                   }`}>
                     {type.label}
                   </span>
@@ -336,16 +615,14 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               ))}
             </div>
 
-            {/* JSON/Raw Editor с подсветкой и toolbar */}
             {(request.body.type === 'raw' || request.body.type === 'graphql') && (
               <div className="flex-1 min-h-0 flex flex-col">
-                {/* Toolbar с форматом и кнопками */}
                 <div className="flex items-center justify-between mb-2 shrink-0">
                   <div className="flex items-center gap-2">
                     <select
                       value={jsonFormat}
                       onChange={(e) => setJsonFormat(e.target.value as any)}
-                      className="px-2 py-1 bg-[#2d2d2d] border border-[#3d3d3d] rounded text-xs text-primary-500 focus:outline-none"
+                      className="px-2 py-1 bg-[#1a1a23] border border-[rgba(255,255,255,0.08)] rounded text-xs text-indigo-400 focus:outline-none focus:border-indigo-500/50"
                     >
                       <option value="JSON">JSON</option>
                       <option value="XML">XML</option>
@@ -355,18 +632,18 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setShowSchemaEditor(true)}
-                      className="flex items-center gap-1.5 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+                      className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all"
                       title="JSON Schema"
                     >
-                      <Database size={12} />
+                      <Database size={11} />
                       Schema
                     </button>
                     <button
                       onClick={handleBeautify}
-                      className="flex items-center gap-1.5 px-2 py-1 text-xs text-primary-500 hover:text-primary-400 transition-colors"
+                      className="flex items-center gap-1 px-2 py-1 text-xs text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 rounded transition-all"
                       title="Beautify (format)"
                     >
-                      <Code size={12} />
+                      <Code size={11} />
                       Beautify
                     </button>
                   </div>
@@ -382,10 +659,9 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               </div>
             )}
 
-            {/* Form-data, x-www-form-urlencoded, binary, none */}
             {['form-data', 'x-www-form-urlencoded', 'binary', 'none'].includes(request.body.type) && (
               <div className="flex-1">
-                <div className="text-gray-400 text-sm text-center py-8">
+                <div className="text-gray-500 text-sm text-center py-8">
                   {request.body.type === 'none' ? 'Тело запроса не отправляется' : `${request.body.type} editor (в разработке)`}
                 </div>
               </div>
@@ -393,29 +669,38 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
           </div>
         )}
 
+        {activeTab === 'docs' && (
+          <div className="text-gray-500 text-sm text-center py-8">
+            <p className="mb-2">📚 Documentation</p>
+            <p>Добавьте документацию к вашему запросу</p>
+          </div>
+        )}
+
         {activeTab === 'scripts' && (
-          <div className="text-gray-400 text-sm text-center py-8">
+          <div className="text-gray-500 text-sm text-center py-8">
             <p className="mb-2">💻 Pre-request Scripts & Tests</p>
-            <p>Добавьте скрипты для автоматизации тестирования</p>
+            <p>Добавьте скрипты для автоматизации</p>
           </div>
         )}
 
         {activeTab === 'settings' && (
-          <div className="text-gray-400 text-sm text-center py-8">
-            <p className="mb-2">️ Settings</p>
+          <div className="text-gray-500 text-sm text-center py-8">
+            <p className="mb-2">⚙️ Settings</p>
             <p>Настройки запроса</p>
           </div>
         )}
       </div>
 
-      {/* Schema Editor Modal */}
       {showSchemaEditor && (
         <SchemaEditor
           schema={bodySchema}
-          onSave={handleSaveSchema}
+          onSave={(s) => { setBodySchema(s); setShowSchemaEditor(false); }}
           onClose={() => setShowSchemaEditor(false)}
           bodyContent={request.body.content}
-          onApplyExample={handleApplyExample}
+          onApplyExample={(ex) => { 
+            updateBody({ ...request.body, content: ex }); 
+            setShowSchemaEditor(false); 
+          }}
         />
       )}
     </div>
@@ -442,30 +727,30 @@ const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
   return (
     <div className="space-y-2">
       {items.map(item => (
-        <div key={item.id} className="flex gap-2 items-center">
+        <div key={item.id} className="flex gap-2 items-center group">
           <input
             type="checkbox"
             checked={item.enabled}
             onChange={(e) => onUpdate(item.id, 'enabled', e.target.checked)}
-            className="w-3.5 h-3.5"
+            className="w-3.5 h-3.5 rounded border-gray-600 text-indigo-500 focus:ring-indigo-500/20"
           />
           <input
             type="text"
             value={item.key}
             onChange={(e) => onUpdate(item.id, 'key', e.target.value)}
             placeholder={keyPlaceholder}
-            className="flex-1 px-2.5 py-1.5 bg-[#2d2d2d] border border-[#3d3d3d] rounded focus:outline-none focus:border-primary-500 text-sm"
+            className="flex-1 px-2.5 py-1.5 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600"
           />
           <input
             type="text"
             value={item.value}
             onChange={(e) => onUpdate(item.id, 'value', e.target.value)}
             placeholder={valuePlaceholder}
-            className="flex-1 px-2.5 py-1.5 bg-[#2d2d2d] border border-[#3d3d3d] rounded focus:outline-none focus:border-primary-500 text-sm"
+            className="flex-1 px-2.5 py-1.5 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 transition-all placeholder:text-gray-600"
           />
           <button
             onClick={() => onRemove(item.id)}
-            className="p-1.5 text-red-500 hover:bg-red-500/10 rounded transition-colors"
+            className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
           >
             <Trash2 size={14} />
           </button>
@@ -473,71 +758,11 @@ const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
       ))}
       <button
         onClick={onAdd}
-        className="flex items-center gap-2 px-3 py-1.5 text-primary-500 hover:bg-primary-500/10 rounded transition-colors text-sm"
+        className="flex items-center gap-2 px-3 py-1.5 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition-all text-sm font-medium"
       >
         <Plus size={14} />
         Добавить
       </button>
-    </div>
-  );
-};
-
-interface AuthEditorProps {
-  request: HttpRequest;
-  onChange: (request: HttpRequest) => void;
-}
-
-const AuthEditor: React.FC<AuthEditorProps> = ({ request, onChange }) => {
-  const auth = request.auth || { type: 'none' };
-
-  const updateAuth = (newAuth: typeof auth) => {
-    onChange({ ...request, auth: newAuth });
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-4">
-        {(['none', 'bearer', 'basic'] as const).map(type => (
-          <label key={type} className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="radio"
-              checked={auth.type === type}
-              onChange={() => updateAuth({ ...auth, type })}
-              className="w-3.5 h-3.5"
-            />
-            <span className="text-sm">{type}</span>
-          </label>
-        ))}
-      </div>
-
-      {auth.type === 'bearer' && (
-        <input
-          type="text"
-          value={auth.token || ''}
-          onChange={(e) => updateAuth({ ...auth, token: e.target.value })}
-          placeholder="Bearer token"
-          className="w-full px-3 py-2 bg-[#2d2d2d] border border-[#3d3d3d] rounded focus:outline-none focus:border-primary-500 text-sm"
-        />
-      )}
-
-      {auth.type === 'basic' && (
-        <div className="space-y-2">
-          <input
-            type="text"
-            value={auth.username || ''}
-            onChange={(e) => updateAuth({ ...auth, username: e.target.value })}
-            placeholder="Username"
-            className="w-full px-3 py-2 bg-[#2d2d2d] border border-[#3d3d3d] rounded focus:outline-none focus:border-primary-500 text-sm"
-          />
-          <input
-            type="password"
-            value={auth.password || ''}
-            onChange={(e) => updateAuth({ ...auth, password: e.target.value })}
-            placeholder="Password"
-            className="w-full px-3 py-2 bg-[#2d2d2d] border border-[#3d3d3d] rounded focus:outline-none focus:border-primary-500 text-sm"
-          />
-        </div>
-      )}
     </div>
   );
 };

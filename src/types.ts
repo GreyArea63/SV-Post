@@ -5,10 +5,31 @@ export interface KeyValuePair {
   enabled: boolean;
 }
 
+export interface RequestAuth {
+  type: 'none' | 'bearer' | 'basic' | 'apikey' | 'oauth2' | 'noauth';
+  token?: string;
+  username?: string;
+  password?: string;
+  apiKey?: string;
+  apiValue?: string;
+  addTo?: 'header' | 'queryParams';
+  accessToken?: string;
+  tokenType?: string;
+  refreshToken?: string;
+  grantType?: string;
+  callbackUrl?: string;
+  authUrl?: string;
+  accessTokenUrl?: string;
+  clientId?: string;
+  clientSecret?: string;
+  scope?: string;
+  state?: string;
+}
+
 export interface RequestBody {
-  type: 'none' | 'json' | 'form-data' | 'x-www-form-urlencoded' | 'raw';
+  type: 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'binary' | 'graphql';
   content: string;
-  formData?: KeyValuePair[];
+  form?: KeyValuePair[];
 }
 
 export interface HttpRequest {
@@ -19,11 +40,14 @@ export interface HttpRequest {
   headers: KeyValuePair[];
   queryParams: KeyValuePair[];
   body: RequestBody;
-  auth?: {
-    type: 'none' | 'bearer' | 'basic';
-    token?: string;
-    username?: string;
-    password?: string;
+  auth?: RequestAuth;
+  scripts?: {
+    preRequest?: string;
+    test?: string;
+  };
+  settings?: {
+    followRedirects?: boolean;
+    timeout?: number;
   };
 }
 
