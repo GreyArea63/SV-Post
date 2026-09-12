@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Download, Upload, X, Settings, Trash2, Database, FileJson, Menu } from 'lucide-react';
 import { Collection } from '../types';
 import { isPostmanCollection, convertPostmanCollection } from '../utils/postmanConverter';
@@ -12,6 +12,21 @@ interface FunctionMenuProps {
   onOpenJsonBuilder: () => void;
 }
 
+interface Notification {
+  type: 'success' | 'error' | 'info';
+  message: string;
+}
+
+// Строгая типизация для устранения ошибок TS2339
+interface MenuItem {
+  icon: React.ReactNode;
+  label: string;
+  description: string;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+}
+
 export const FunctionMenu: React.FC<FunctionMenuProps> = ({
   onImport,
   onExportAll,
@@ -20,10 +35,11 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
   onOpenJsonBuilder,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [notification, setNotification] = useState<Notification | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
+  // Закрытие меню при клике вне его области
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -34,6 +50,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
+  // Авто-скрытие уведомлений
   useEffect(() => {
     if (notification) {
       const timer = setTimeout(() => setNotification(null), 3000);
@@ -41,7 +58,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     }
   }, [notification]);
 
-  const showNotification = (type: 'success' | 'error', message: string) => {
+  const showNotification = (type: 'success' | 'error' | 'info', message: string) => {
     setNotification({ type, message });
   };
 
@@ -73,7 +90,11 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
         throw new Error('Неверный формат файла');
       }
 
-      const validCollections = importedCollections.filter((c: any) => c.id && c.name && Array.isArray(c.requests));
+      // БЕЗОПАСНАЯ фильтрация: проверка на null и корректную структуру объекта
+      const validCollections = importedCollections.filter((c: any) => 
+        c && typeof c === 'object' && c.id && c.name && Array.isArray(c.requests)
+      );
+      
       if (validCollections.length === 0) throw new Error('Не найдено валидных коллекций');
 
       onImport(validCollections);
@@ -88,7 +109,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
   const handleExportClick = () => {
     setIsOpen(false);
     if (collections.length === 0) {
-      showNotification('error', 'Нет коллекций');
+      showNotification('error', 'Нет коллекций для экспорта');
       return;
     }
     try {
@@ -105,7 +126,8 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     setIsOpen(false);
   };
 
-  const menuSections = [
+  // useMemo предотвращает пересоздание массива при каждом рендере
+  const menuSections = useMemo<{ title: string; items: MenuItem[] }[]>(() => [
     {
       title: 'Коллекции',
       items: [
@@ -129,23 +151,35 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     {
       title: 'Очистка',
       items: [
-        { icon: <Trash2 size={14} />, label: 'История', description: 'Удалить', danger: true, onClick: () => {
-          if (confirm('Очистить историю?')) {
-            storage.clearHistory();
-            showNotification('success', 'История очищена');
-            setTimeout(() => window.location.reload(), 1000);
-          }
-        }},
-        { icon: <Trash2 size={14} />, label: 'Всё', description: 'Сброс', danger: true, onClick: () => {
-          if (confirm('Удалить ВСЕ данные?')) {
-            storage.clearAllData();
-            showNotification('success', 'Данные очищены');
-            setTimeout(() => window.location.reload(), 1000);
-          }
-        }},
+        { 
+          icon: <Trash2 size={14} />, 
+          label: 'История', 
+          description: 'Удалить', 
+          danger: true, 
+          onClick: async () => {
+            if (window.confirm('Очистить историю запросов?')) {
+              await storage.clearHistory();
+              showNotification('success', 'История очищена');
+              window.location.reload();
+            }
+          } 
+        },
+        { 
+          icon: <Trash2 size={14} />, 
+          label: 'Все данные', 
+          description: 'Полный сброс', 
+          danger: true, 
+          onClick: async () => {
+            if (window.confirm('Удалить ВСЕ данные приложения? Это действие необратимо.')) {
+              await storage.clearAllData();
+              showNotification('success', 'Все данные очищены');
+              window.location.reload();
+            }
+          } 
+        },
       ]
     }
-  ];
+  ], [collections.length, handleImportClick, handleExportClick, handleShowStorageInfo, onOpenJsonBuilder, onOpenEnvManager]);
 
   return (
     <div className="relative" ref={menuRef}>
@@ -156,16 +190,17 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
             ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' 
             : 'bg-[#2d2d2d] hover:bg-[#3d3d3d] text-gray-300 border border-[rgba(255,255,255,0.08)]'
         }`}
+        aria-label="Открыть меню функций"
       >
         <Menu size={12} />
         <span>Функции</span>
       </button>
 
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 w-64 glass rounded-lg shadow-2xl z-50 overflow-hidden animate-scale-in">
+        <div className="absolute top-full left-0 mt-1 w-64 bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg shadow-2xl z-50 overflow-hidden animate-scale-in">
           {menuSections.map((section, sIdx) => (
             <div key={sIdx} className={sIdx > 0 ? 'border-t border-[rgba(255,255,255,0.08)]' : ''}>
-              <div className="px-2 py-1.5 text-[9px] font-semibold text-gray-500 uppercase tracking-wider">
+              <div className="px-3 py-1.5 text-[9px] font-semibold text-gray-500 uppercase tracking-wider">
                 {section.title}
               </div>
               {section.items.map((item, iIdx) => (
@@ -173,7 +208,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
                   key={iIdx}
                   onClick={item.onClick}
                   disabled={item.disabled}
-                  className={`w-full flex items-center gap-2 px-2 py-1.5 transition-all text-left ${
+                  className={`w-full flex items-center gap-2 px-3 py-2 transition-all text-left ${
                     item.disabled 
                       ? 'opacity-40 cursor-not-allowed' 
                       : item.danger 
@@ -206,13 +241,13 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       />
 
       {notification && (
-        <div className={`fixed top-16 left-1/2 transform -translate-x-1/2 px-3 py-2 rounded-lg shadow-lg z-[100] flex items-center gap-2 animate-fade-in glass ${
-          notification.type === 'success' ? 'border border-emerald-500/30 text-emerald-400' : 
-          notification.type === 'error' ? 'border border-red-500/30 text-red-400' : 
-          'border border-blue-500/30 text-blue-400'
+        <div className={`fixed top-16 left-1/2 transform -translate-x-1/2 px-4 py-2 rounded-lg shadow-lg z-[100] flex items-center gap-2 animate-fade-in bg-[#1e1e1e] border ${
+          notification.type === 'success' ? 'border-emerald-500/30 text-emerald-400' : 
+          notification.type === 'error' ? 'border-red-500/30 text-red-400' : 
+          'border-blue-500/30 text-blue-400'
         }`}>
           <span className="text-xs">{notification.message}</span>
-          <button onClick={() => setNotification(null)} className="hover:opacity-70">
+          <button onClick={() => setNotification(null)} className="hover:opacity-70" aria-label="Закрыть уведомление">
             <X size={12} />
           </button>
         </div>

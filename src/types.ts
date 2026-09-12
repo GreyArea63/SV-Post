@@ -27,7 +27,7 @@ export interface RequestAuth {
 }
 
 export interface RequestBody {
-  type: 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'binary' | 'graphql';
+  type: 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'json' | 'binary' | 'graphql';
   content: string;
   form?: KeyValuePair[];
 }

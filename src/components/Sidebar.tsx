@@ -1,210 +1,216 @@
-import React, { useState } from 'react';
-import { Folder, Plus, ChevronRight, ChevronDown, FileText, History as HistoryIcon, Play, Search } from 'lucide-react';
-import { Collection, HistoryItem, HttpRequest } from '../types';
+import React, { useState, useMemo } from 'react';
+import { Folder, Clock, Plus, ChevronRight, ChevronDown, Play, Trash2, Search } from 'lucide-react';
+import { Collection, HistoryItem } from '../types';
+import { formatTime } from '../utils/helpers';
+import { getMethodColor } from '../utils/methodColors';
 
 interface SidebarProps {
   collections: Collection[];
   history: HistoryItem[];
   onSelectRequest: (collectionId: string, requestId: string) => void;
   onSelectHistory: (item: HistoryItem) => void;
+  onDeleteHistory: (id: string) => void;
   onAddCollection: () => void;
-  onRunRequest: (request: HttpRequest, collectionName: string) => void;
+  onRunRequest: (request: Collection['requests'][0], collectionName: string) => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ 
-  collections, 
-  history, 
-  onSelectRequest, 
-  onSelectHistory, 
-  onAddCollection, 
-  onRunRequest 
+export const Sidebar: React.FC<SidebarProps> = ({
+  collections,
+  history,
+  onSelectRequest,
+  onSelectHistory,
+  onDeleteHistory,
+  onAddCollection,
+  onRunRequest,
 }) => {
+  const [activeTab, setActiveTab] = useState<'collections' | 'history'>('collections');
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set());
-  const [activeView, setActiveView] = useState<'collections' | 'history'>('collections');
   const [searchQuery, setSearchQuery] = useState('');
 
   const toggleCollection = (id: string) => {
     const newExpanded = new Set(expandedCollections);
-    newExpanded.has(id) ? newExpanded.delete(id) : newExpanded.add(id);
+    if (newExpanded.has(id)) {
+      newExpanded.delete(id);
+    } else {
+      newExpanded.add(id);
+    }
     setExpandedCollections(newExpanded);
   };
 
-  const METHOD_COLORS: Record<string, string> = { 
-    GET: 'text-emerald-400', 
-    POST: 'text-amber-400', 
-    PUT: 'text-blue-400', 
-    PATCH: 'text-purple-400', 
-    DELETE: 'text-red-400',
-    HEAD: 'text-gray-400',
-    OPTIONS: 'text-orange-400'
+  const lowerQuery = searchQuery.toLowerCase();
+
+  const filteredCollections = useMemo(() => {
+    if (!lowerQuery) return collections;
+    return collections.filter(collection =>
+      collection.name.toLowerCase().includes(lowerQuery) ||
+      collection.requests.some(r => 
+        r.name.toLowerCase().includes(lowerQuery) ||
+        r.url.toLowerCase().includes(lowerQuery)
+      )
+    );
+  }, [collections, lowerQuery]);
+
+  const filteredHistory = useMemo(() => {
+    if (!lowerQuery) return history;
+    return history.filter(item => 
+      item.request.name.toLowerCase().includes(lowerQuery) ||
+      item.request.url.toLowerCase().includes(lowerQuery) ||
+      item.request.method.toLowerCase().includes(lowerQuery)
+    );
+  }, [history, lowerQuery]);
+
+  // Авто-раскрытие при поиске
+  const isExpanded = (collectionId: string) => {
+    if (searchQuery) return true;
+    return expandedCollections.has(collectionId);
   };
-
-  const METHOD_BG: Record<string, string> = { 
-    GET: 'bg-emerald-500/10', 
-    POST: 'bg-amber-500/10', 
-    PUT: 'bg-blue-500/10', 
-    PATCH: 'bg-purple-500/10', 
-    DELETE: 'bg-red-500/10',
-    HEAD: 'bg-gray-500/10',
-    OPTIONS: 'bg-orange-500/10'
-  };
-
-  const filteredCollections = collections.filter(c => 
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.requests.some(r => r.name.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
-
-  const filteredHistory = history.filter(h => 
-    h.request.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    h.request.url.toLowerCase().includes(searchQuery.toLowerCase())
-  );
 
   return (
-    <div className="w-[280px] bg-[#1a1a23] border-r border-[rgba(255,255,255,0.08)] flex flex-col shrink-0 animate-slide-in">
-      {/* Header */}
-      <div className="h-[38px] flex border-b border-[rgba(255,255,255,0.08)] shrink-0">
-        <button 
-          onClick={() => setActiveView('collections')} 
-          className={`flex-1 px-3 py-2 text-sm font-medium transition-all flex items-center justify-center gap-2 ${
-            activeView === 'collections' 
-              ? 'text-indigo-400 border-b-2 border-indigo-500 bg-indigo-500/5' 
-              : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+    <div className="w-72 bg-[#1e1e1e] border-r border-[rgba(255,255,255,0.08)] flex flex-col h-full">
+      <div className="flex border-b border-[rgba(255,255,255,0.08)]">
+        <button
+          onClick={() => { setActiveTab('collections'); setSearchQuery(''); }}
+          className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-medium transition-all ${
+            activeTab === 'collections'
+              ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
+              : 'text-gray-500 hover:text-gray-300'
           }`}
         >
-          <Folder size={14} /> Коллекции
+          <Folder size={14} />
+          Коллекции
         </button>
-        <button 
-          onClick={() => setActiveView('history')} 
-          className={`flex-1 px-3 py-2 text-sm font-medium transition-all flex items-center justify-center gap-2 ${
-            activeView === 'history' 
-              ? 'text-indigo-400 border-b-2 border-indigo-500 bg-indigo-500/5' 
-              : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+        <button
+          onClick={() => { setActiveTab('history'); setSearchQuery(''); }}
+          className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-medium transition-all ${
+            activeTab === 'history'
+              ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
+              : 'text-gray-500 hover:text-gray-300'
           }`}
         >
-          <HistoryIcon size={14} /> История
+          <Clock size={14} />
+          История
         </button>
       </div>
 
-      {/* Search */}
       <div className="p-3 border-b border-[rgba(255,255,255,0.08)]">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500" size={14} />
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Поиск..."
-            className="w-full pl-9 pr-3 py-2 bg-[#252532] border border-[rgba(255,255,255,0.08)] rounded-lg text-sm text-gray-300 focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 transition-all placeholder:text-gray-600"
+            className="w-full pl-9 pr-3 py-1.5 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg text-xs text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-gray-500 focus:ring-1 focus:ring-gray-500/20"
           />
         </div>
       </div>
-      
-      <div className="flex-1 overflow-auto p-2">
-        {activeView === 'collections' && (
-          <div className="space-y-1">
-            <button 
-              onClick={onAddCollection} 
-              className="w-full flex items-center gap-2 px-3 py-2.5 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition-all text-sm font-medium group"
+
+      <div className="flex-1 overflow-y-auto">
+        {activeTab === 'collections' && (
+          <div className="p-2">
+            <button
+              onClick={onAddCollection}
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg transition-all mb-3"
             >
-              <Plus size={14} className="group-hover:scale-110 transition-transform" /> 
+              <Plus size={14} />
               Новая коллекция
             </button>
-            
-            {filteredCollections.map(collection => (
-              <div key={collection.id} className="space-y-1 animate-fade-in">
-                <button
-                  onClick={() => toggleCollection(collection.id)}
-                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-white/5 rounded-lg transition-all text-sm group"
-                >
-                  {expandedCollections.has(collection.id) ? (
-                    <ChevronDown size={14} className="text-gray-400" />
-                  ) : (
-                    <ChevronRight size={14} className="text-gray-400" />
-                  )}
-                  <Folder size={14} className="text-amber-400" />
-                  <span className="flex-1 text-left truncate text-gray-300 group-hover:text-white transition-colors">
-                    {collection.name}
-                  </span>
-                  <span className="text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded">
-                    {collection.requests.length}
-                  </span>
-                </button>
-                
-                {expandedCollections.has(collection.id) && (
-                  <div className="ml-4 space-y-1 border-l-2 border-white/5 pl-2">
-                    {collection.requests.map(request => (
-                      <div key={request.id} className="flex items-center group/item">
-                        <button
+
+            <div className="space-y-1">
+              {filteredCollections.map(collection => (
+                <div key={collection.id}>
+                  <button
+                    onClick={() => toggleCollection(collection.id)}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-gray-300 hover:bg-white/5 rounded-lg transition-all"
+                  >
+                    {isExpanded(collection.id) ? (
+                      <ChevronDown size={12} className="text-gray-500" />
+                    ) : (
+                      <ChevronRight size={12} className="text-gray-500" />
+                    )}
+                    <Folder size={12} className="text-amber-400" />
+                    <span className="flex-1 text-left truncate">{collection.name}</span>
+                    <span className="text-[10px] text-gray-500">{collection.requests.length}</span>
+                  </button>
+
+                  {isExpanded(collection.id) && (
+                    <div className="ml-6 mt-1 space-y-0.5">
+                      {collection.requests.map(request => (
+                        <div
+                          key={request.id}
+                          className="group flex items-center gap-2 px-2 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg transition-all cursor-pointer"
                           onClick={() => onSelectRequest(collection.id, request.id)}
-                          className="flex-1 flex items-center gap-2 px-2 py-1.5 hover:bg-white/5 rounded transition-all text-xs"
                         >
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${METHOD_COLORS[request.method]} ${METHOD_BG[request.method]}`}>
+                          <span className={`font-bold text-[10px] w-10 ${getMethodColor(request.method)}`}>
                             {request.method}
                           </span>
-                          <span className="flex-1 text-left truncate text-gray-400 group-hover/item:text-white transition-colors">
-                            {request.name}
-                          </span>
-                        </button>
-                        
-                        <button
-                          onClick={() => onRunRequest(request, collection.name)}
-                          className="p-1.5 text-gray-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded opacity-0 group-hover/item:opacity-100 transition-all"
-                          title="Запустить Runner"
-                        >
-                          <Play size={12} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+                          <span className="flex-1 truncate">{request.name}</span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRunRequest(request, collection.name);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-all"
+                            aria-label="Запустить в Runner"
+                          >
+                            <Play size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
 
-            {filteredCollections.length === 0 && (
-              <div className="text-center text-gray-500 py-8 text-sm">
-                {searchQuery ? 'Ничего не найдено' : 'Нет коллекций'}
-              </div>
-            )}
+              {filteredCollections.length === 0 && (
+                <div className="text-center py-8 text-xs text-gray-500">
+                  <Folder size={32} className="mx-auto mb-2 opacity-30" />
+                  <p>{collections.length === 0 ? 'Нет коллекций' : 'Ничего не найдено'}</p>
+                </div>
+              )}
+            </div>
           </div>
         )}
-        
-        {activeView === 'history' && (
-          <div className="space-y-1">
-            {filteredHistory.length === 0 ? (
-              <div className="text-gray-500 text-sm text-center py-8">
-                {searchQuery ? 'Ничего не найдено' : 'История пуста'}
-              </div>
-            ) : (
-              filteredHistory.map(item => (
+
+        {activeTab === 'history' && (
+          <div className="p-2">
+            <div className="space-y-1">
+              {filteredHistory.map((item) => (
                 <button
                   key={item.id}
                   onClick={() => onSelectHistory(item)}
-                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-white/5 rounded-lg transition-all text-xs group animate-fade-in"
+                  className="w-full flex items-start gap-2 px-2 py-2 text-xs text-left hover:bg-white/5 rounded-lg transition-all group"
                 >
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${METHOD_COLORS[item.request.method]} ${METHOD_BG[item.request.method]}`}>
+                  <span className={`font-bold text-[10px] w-10 shrink-0 ${getMethodColor(item.request.method)}`}>
                     {item.request.method}
                   </span>
-                  <div className="flex-1 text-left min-w-0">
-                    <div className="truncate text-gray-300 group-hover:text-white transition-colors">
-                      {item.request.name || item.request.url}
-                    </div>
-                    <div className="text-[10px] text-gray-600">
-                      {new Date(item.timestamp).toLocaleString('ru-RU', { 
-                        hour: '2-digit', 
-                        minute: '2-digit',
-                        day: '2-digit',
-                        month: '2-digit'
-                      })}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-gray-300 truncate font-medium">{item.request.name}</div>
+                    <div className="text-gray-500 truncate text-[10px]">{item.request.url}</div>
+                    <div className="text-gray-600 text-[10px] mt-0.5">
+                      {formatTime(item.timestamp)} • {item.response?.status || '---'}
                     </div>
                   </div>
-                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                    item.response.status < 300 ? 'text-emerald-400 bg-emerald-500/10' : 'text-red-400 bg-red-500/10'
-                  }`}>
-                    {item.response.status}
-                  </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteHistory(item.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-all"
+                    aria-label="Удалить из истории"
+                  >
+                    <Trash2 size={10} />
+                  </button>
                 </button>
-              ))
-            )}
+              ))}
+
+              {filteredHistory.length === 0 && (
+                <div className="text-center py-8 text-xs text-gray-500">
+                  <Clock size={32} className="mx-auto mb-2 opacity-30" />
+                  <p>{history.length === 0 ? 'История пуста' : 'Ничего не найдено'}</p>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

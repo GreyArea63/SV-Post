@@ -1,47 +1,30 @@
 import { KeyValuePair } from '../types';
 
-export const generateId = (): string => {
+export const generateId = () => {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 };
 
-export const formatJSON = (data: any): string => {
-  try {
-    return JSON.stringify(data, null, 2);
-  } catch {
-    return String(data);
-  }
-};
-
-export const formatSize = (bytes: number): string => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-};
-
-export const formatTime = (ms: number): string => {
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
-};
-
-export const replaceVariables = (text: string, variables: KeyValuePair[]): string => {
-  if (!text) return text;
+// ИСПРАВЛЕНИЕ 1.1: Убран третий параметр, теперь только 2 аргумента
+export const replaceVariables = (
+  text: string,
+  variables: KeyValuePair[]
+): string => {
   let result = text;
-  variables.forEach(v => {
-    if (v.enabled && v.key) {
-      const regex = new RegExp(`\\{\\{${escapeRegex(v.key)}\\}\\}`, 'g');
-      result = result.replace(regex, v.value);
+  
+  // Сортируем по длине ключа (сначала длинные), чтобы заменять {{base_url}} до {{base}}
+  const sortedVars = [...variables].sort((a, b) => b.key.length - a.key.length);
+  
+  sortedVars.forEach(variable => {
+    if (variable.enabled && variable.key) {
+      const regex = new RegExp(`{{${variable.key.trim()}}}`, 'g');
+      result = result.replace(regex, variable.value);
     }
   });
+  
   return result;
 };
 
-const escapeRegex = (str: string): string => {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-};
-
-export const parseKeyValuePairs = (pairs: KeyValuePair[]): Record<string, string> => {
+export const parseKeyValuePairs = (pairs: KeyValuePair[]) => {
   const result: Record<string, string> = {};
   pairs.forEach(pair => {
     if (pair.enabled && pair.key) {
@@ -51,27 +34,54 @@ export const parseKeyValuePairs = (pairs: KeyValuePair[]): Record<string, string
   return result;
 };
 
-// Находит все переменные в тексте ({{variable}})
-export const findVariablesInText = (text: string): string[] => {
-  if (!text) return [];
-  const matches = text.match(/\{\{([^}]+)\}\}/g);
-  if (!matches) return [];
-  return matches.map(m => m.slice(2, -2));
+export const formatJSON = (data: any) => {
+  try {
+    return JSON.stringify(data, null, 2);
+  } catch {
+    return String(data);
+  }
 };
 
-// Проверяет, разрешена ли переменная
+export const formatSize = (bytes: number) => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+};
+
+export const formatTime = (ms: number) => {
+  if (ms < 0) ms = 0;
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+};
+
+export const findVariablesInText = (text: string): string[] => {
+  const regex = /{{([^}]+)}}/g;
+  const matches: string[] = [];
+  let match;
+  
+  while ((match = regex.exec(text)) !== null) {
+    matches.push(match[1].trim());
+  }
+  
+  return matches;
+};
+
 export const isVariableResolved = (
-  varName: string,
-  envVariables: KeyValuePair[],
-  globalVariables: KeyValuePair[]
-): { resolved: boolean; value: string | null } => {
-  // Сначала ищем в окружении
-  const envVar = envVariables.find(v => v.key === varName && v.enabled);
-  if (envVar) return { resolved: true, value: envVar.value };
+  variableName: string,
+  variables: KeyValuePair[]
+) => {
+  const variable = variables.find(
+    v => v.enabled && v.key.trim() === variableName.trim()
+  );
   
-  // Потом в глобальных
-  const globalVar = globalVariables.find(v => v.key === varName && v.enabled);
-  if (globalVar) return { resolved: true, value: globalVar.value };
-  
-  return { resolved: false, value: null };
+  return {
+    resolved: !!variable && variable.value !== '',
+    value: variable?.value || '',
+  };
+};
+
+export const escapeRegex = (string: string): string => {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };

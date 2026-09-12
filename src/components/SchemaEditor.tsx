@@ -1,354 +1,272 @@
-import React, { useState, useEffect } from 'react';
-import { X, Save, Download, Upload, Code, CheckCircle, AlertCircle } from 'lucide-react';
-import { JsonEditor } from './JsonEditor';
+import { useState, useMemo } from 'react';
+import { X, Check } from 'lucide-react';
 
 interface SchemaEditorProps {
   schema: string;
   onSave: (schema: string) => void;
   onClose: () => void;
-  bodyContent: string;
   onApplyExample: (example: string) => void;
 }
 
-// Валидация JSON Schema
-const validateSchema = (schema: string): { valid: boolean; error?: string } => {
-  try {
-    const parsed = JSON.parse(schema);
-    // Простая проверка структуры JSON Schema
-    if (parsed.$schema && !parsed.$schema.includes('json-schema.org')) {
-      return { valid: false, error: 'Неверный формат $schema' };
+const DEFAULT_SCHEMA = `{
+  "type": "object",
+  "properties": {
+    "id": { "type": "integer" },
+    "name": { "type": "string" }
+  },
+  "required": ["id", "name"]
+}`;
+
+// Вынесено за компонент, чтобы не пересоздаваться при каждом рендере
+const generateExampleFromSchema = (schema: any): any => {
+  if (!schema || typeof schema !== 'object') return null;
+
+  if (schema.type === 'object') {
+    const obj: any = {};
+    if (schema.properties) {
+      Object.entries(schema.properties).forEach(([key, prop]: [string, any]) => {
+        if (prop.default !== undefined) {
+          obj[key] = prop.default;
+        } else if (prop.type === 'string') {
+          obj[key] = '';
+        } else if (prop.type === 'number') {
+          obj[key] = 0;
+        } else if (prop.type === 'integer') {
+          obj[key] = 0;
+        } else if (prop.type === 'boolean') {
+          obj[key] = false;
+        } else if (prop.type === 'array') {
+          obj[key] = [];
+        } else if (prop.type === 'object') {
+          obj[key] = generateExampleFromSchema(prop);
+        } else {
+          obj[key] = null;
+        }
+      });
+    }
+    return obj;
+  }
+
+  if (schema.type === 'string') return '';
+  if (schema.type === 'number' || schema.type === 'integer') return 0;
+  if (schema.type === 'boolean') return false;
+  if (schema.type === 'array') return [];
+
+  return null;
+};
+
+const validateJsonAgainstSchema = (schema: any, data: any): { valid: boolean; error?: string } => {
+  if (!schema || typeof schema !== 'object') {
+    return { valid: false, error: 'Некорректная схема' };
+  }
+
+  if (schema.type === 'object') {
+    if (data === null || data === undefined) {
+      return { valid: false, error: 'Ожидался объект, получено null/undefined' };
+    }
+    if (typeof data !== 'object' || Array.isArray(data)) {
+      return { valid: false, error: 'Ожидался объект' };
+    }
+
+    if (schema.required && Array.isArray(schema.required)) {
+      for (const field of schema.required) {
+        if (!(field in data)) {
+          return { valid: false, error: `Отсутствует обязательное поле: ${field}` };
+        }
+      }
+    }
+
+    if (schema.properties) {
+      for (const [key, prop] of Object.entries(schema.properties)) {
+        if (key in data) {
+          const result = validateJsonAgainstSchema(prop, data[key]);
+          if (!result.valid) {
+            return { valid: false, error: `Поле "${key}": ${result.error}` };
+          }
+        }
+      }
+    }
+
+    return { valid: true };
+  }
+
+  if (schema.type === 'integer') {
+    if (typeof data !== 'number' || !Number.isInteger(data)) {
+      return { valid: false, error: 'Ожидалось целое число' };
     }
     return { valid: true };
-  } catch (e: any) {
-    return { valid: false, error: e.message };
-  }
-};
-
-// Генерация примера JSON из JSON Schema
-const generateExampleFromSchema = (schema: any, level = 0): any => {
-  if (level > 5) return null; // Ограничение глубины
-
-  if (!schema.type) {
-    if (schema.properties) return generateExampleFromSchema({ type: 'object', properties: schema.properties }, level);
-    if (schema.items) return generateExampleFromSchema({ type: 'array', items: schema.items }, level);
-    return null;
   }
 
-  switch (schema.type) {
-    case 'string':
-      return schema.enum ? schema.enum[0] : (schema.default || 'string');
-    case 'number':
-    case 'integer':
-      return schema.default || (schema.type === 'integer' ? 0 : 0.0);
-    case 'boolean':
-      return schema.default || false;
-    case 'null':
-      return null;
-    case 'array':
-      if (schema.items) {
-        return [generateExampleFromSchema(schema.items, level + 1)];
-      }
-      return [];
-    case 'object':
-      if (schema.properties) {
-        const obj: any = {};
-        Object.entries(schema.properties).forEach(([key, propSchema]) => {
-          obj[key] = generateExampleFromSchema(propSchema as any, level + 1);
-        });
-        return obj;
-      }
-      return {};
-    default:
-      return null;
+  if (schema.type === 'number') {
+    if (typeof data !== 'number') {
+      return { valid: false, error: 'Ожидалось число' };
+    }
+    return { valid: true };
   }
-};
 
-// Валидация JSON против схемы (упрощенная)
-const validateJsonAgainstSchema = (json: any, schema: any): { valid: boolean; errors: string[] } => {
-  const errors: string[] = [];
-
-  const validate = (data: any, schemaPart: any, path = '') => {
-    if (!schemaPart) return;
-
-    // Проверка типа
-    if (schemaPart.type) {
-      const actualType = Array.isArray(data) ? 'array' : typeof data;
-      if (actualType !== schemaPart.type) {
-        if (!(schemaPart.type === 'integer' && typeof data === 'number')) {
-          errors.push(`${path || 'root'}: ожидается тип "${schemaPart.type}", получено "${actualType}"`);
-        }
-      }
+  if (schema.type === 'string') {
+    if (typeof data !== 'string') {
+      return { valid: false, error: 'Ожидалась строка' };
     }
+    return { valid: true };
+  }
 
-    // Проверка обязательных полей
-    if (schemaPart.required && Array.isArray(schemaPart.required)) {
-      schemaPart.required.forEach((field: string) => {
-        if (data && !(field in data)) {
-          errors.push(`${path || 'root'}: отсутствует обязательное поле "${field}"`);
-        }
-      });
+  if (schema.type === 'boolean') {
+    if (typeof data !== 'boolean') {
+      return { valid: false, error: 'Ожидался boolean' };
     }
+    return { valid: true };
+  }
 
-    // Рекурсивная проверка свойств объекта
-    if (schemaPart.type === 'object' && schemaPart.properties && data && typeof data === 'object') {
-      Object.entries(schemaPart.properties).forEach(([key, propSchema]) => {
-        validate(data[key], propSchema as any, path ? `${path}.${key}` : key);
-      });
+  if (schema.type === 'array') {
+    if (!Array.isArray(data)) {
+      return { valid: false, error: 'Ожидался массив' };
     }
+    return { valid: true };
+  }
 
-    // Проверка элементов массива
-    if (schemaPart.type === 'array' && schemaPart.items && Array.isArray(data)) {
-      data.forEach((item, index) => {
-        validate(item, schemaPart.items, `${path}[${index}]`);
-      });
-    }
-
-    // Проверка enum
-    if (schemaPart.enum && !schemaPart.enum.includes(data)) {
-      errors.push(`${path || 'root'}: значение должно быть одним из ${JSON.stringify(schemaPart.enum)}`);
-    }
-  };
-
-  validate(json, schema);
-  return { valid: errors.length === 0, errors };
+  return { valid: true };
 };
 
 export const SchemaEditor: React.FC<SchemaEditorProps> = ({
   schema,
   onSave,
   onClose,
-  bodyContent,
   onApplyExample,
 }) => {
-  const [schemaText, setSchemaText] = useState(schema);
-  const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null);
-  const [validationMessage, setValidationMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [localSchema, setLocalSchema] = useState<string>(schema || DEFAULT_SCHEMA);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
-  // Пример JSON Schema по умолчанию
-  const defaultSchema = {
-    $schema: 'http://json-schema.org/draft-07/schema#',
-    type: 'object',
-    properties: {
-      data: {
-        type: 'object',
-        properties: {
-          type: { type: 'string' },
-          id: { type: 'string' },
-          attributes: {
-            type: 'object',
-            properties: {
-              status: { type: 'string' }
-            }
-          }
-        },
-        required: ['type', 'id']
-      }
+  const schemaObject = useMemo(() => {
+    try {
+      return JSON.parse(localSchema);
+    } catch {
+      return null;
+    }
+  }, [localSchema]);
+
+  const handleSave = () => {
+    try {
+      JSON.parse(localSchema);
+      setValidationError(null);
+      onSave(localSchema);
+    } catch (e: any) {
+      setValidationError('Некорректный JSON: ' + e.message);
+    }
+  };
+
+  const handleApplyExample = () => {
+    if (!schemaObject) {
+      setValidationError('Некорректный JSON в схеме');
+      return;
+    }
+
+    try {
+      const example = generateExampleFromSchema(schemaObject);
+      onApplyExample(JSON.stringify(example, null, 2));
+      onClose();
+    } catch (e) {
+      setValidationError('Ошибка генерации примера: ' + (e as Error).message);
     }
   };
 
   const handleValidate = () => {
-    const result = validateSchema(schemaText);
-    setValidationResult(result);
-    if (result.valid) {
-      setValidationMessage({ type: 'success', text: 'Schema валидна' });
-    } else {
-      setValidationMessage({ type: 'error', text: result.error || 'Ошибка валидации' });
+    if (!schemaObject) {
+      setValidationError('Некорректный JSON в схеме');
+      return;
     }
-  };
-
-  const handleGenerateExample = () => {
-    try {
-      const parsed = JSON.parse(schemaText);
-      const example = generateExampleFromSchema(parsed);
-      const exampleJson = JSON.stringify(example, null, 2);
-      onApplyExample(exampleJson);
-      setValidationMessage({ type: 'success', text: 'Пример сгенерирован и применен' });
-    } catch (e: any) {
-      setValidationMessage({ type: 'error', text: `Ошибка генерации: ${e.message}` });
-    }
-  };
-
-  const handleValidateBody = () => {
-    try {
-      const parsedSchema = JSON.parse(schemaText);
-      const bodyJson = JSON.parse(bodyContent);
-      const result = validateJsonAgainstSchema(bodyJson, parsedSchema);
-      
-      if (result.valid) {
-        setValidationMessage({ type: 'success', text: 'Body соответствует схеме' });
-      } else {
-        setValidationMessage({ 
-          type: 'error', 
-          text: `Найдено ошибок: ${result.errors.length}\n${result.errors.slice(0, 3).join('\n')}` 
-        });
-      }
-    } catch (e: any) {
-      setValidationMessage({ type: 'error', text: `Ошибка: ${e.message}` });
-    }
-  };
-
-  const handleSave = () => {
-    const result = validateSchema(schemaText);
-    if (result.valid) {
-      onSave(schemaText);
-      onClose();
-    } else {
-      setValidationMessage({ type: 'error', text: 'Невозможно сохранить невалидную схему' });
-    }
-  };
-
-  const handleImportSchema = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json';
-    input.onchange = async (e: any) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      try {
-        const text = await file.text();
-        JSON.parse(text); // Проверка валидности JSON
-        setSchemaText(text);
-        setValidationMessage({ type: 'success', text: 'Schema импортирована' });
-      } catch (err: any) {
-        setValidationMessage({ type: 'error', text: `Ошибка импорта: ${err.message}` });
-      }
-    };
-    input.click();
-  };
-
-  const handleExportSchema = () => {
-    try {
-      JSON.parse(schemaText); // Проверка
-      const blob = new Blob([schemaText], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'schema.json';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      setValidationMessage({ type: 'success', text: 'Schema экспортирована' });
-    } catch (e: any) {
-      setValidationMessage({ type: 'error', text: `Ошибка экспорта: ${e.message}` });
-    }
-  };
-
-  const loadDefaultSchema = () => {
-    setSchemaText(JSON.stringify(defaultSchema, null, 2));
-    setValidationMessage({ type: 'success', text: 'Загружена схема по умолчанию' });
+    setValidationError(null);
+    setValidationError('Схема валидна ✓');
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[200] p-4">
-      <div className="bg-[#252525] border border-[#3d3d3d] rounded-lg shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[#3d3d3d]">
-          <h2 className="text-lg font-bold text-primary-500 flex items-center gap-2">
-            <Code size={20} />
-            JSON Schema Editor
-          </h2>
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[300] p-4 animate-scale-in">
+      <div className="bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[rgba(255,255,255,0.08)]">
+          <h3 className="text-lg font-bold text-gray-200">JSON Schema Editor</h3>
           <button
             onClick={onClose}
-            className="p-1.5 hover:bg-[#3d3d3d] rounded transition-colors"
+            className="p-2 hover:bg-white/5 rounded-lg transition-all"
+            aria-label="Close"
           >
-            <X size={18} />
+            <X size={18} className="text-gray-400" />
           </button>
         </div>
 
-        {/* Toolbar */}
-        <div className="flex items-center gap-2 px-4 py-2 bg-[#1e1e1e] border-b border-[#3d3d3d]">
-          <button
-            onClick={handleValidate}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2d2d2d] hover:bg-[#3d3d3d] rounded text-sm transition-colors"
-          >
-            <CheckCircle size={14} />
-            Validate Schema
-          </button>
-          <button
-            onClick={handleValidateBody}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2d2d2d] hover:bg-[#3d3d3d] rounded text-sm transition-colors"
-          >
-            <CheckCircle size={14} />
-            Validate Body
-          </button>
-          <button
-            onClick={handleGenerateExample}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-600 hover:bg-primary-700 rounded text-sm transition-colors"
-          >
-            <Code size={14} />
-            Generate Example
-          </button>
-          <div className="w-px h-6 bg-[#3d3d3d] mx-2" />
-          <button
-            onClick={handleImportSchema}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2d2d2d] hover:bg-[#3d3d3d] rounded text-sm transition-colors"
-          >
-            <Upload size={14} />
-            Import
-          </button>
-          <button
-            onClick={handleExportSchema}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2d2d2d] hover:bg-[#3d3d3d] rounded text-sm transition-colors"
-          >
-            <Download size={14} />
-            Export
-          </button>
-          <button
-            onClick={loadDefaultSchema}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2d2d2d] hover:bg-[#3d3d3d] rounded text-sm transition-colors ml-auto"
-          >
-            Load Default
-          </button>
-        </div>
-
-        {/* Validation Message */}
-        {validationMessage && (
-          <div className={`px-4 py-2 text-sm flex items-center gap-2 ${
-            validationMessage.type === 'success' 
-              ? 'bg-green-500/10 text-green-500 border-b border-green-500/30' 
-              : 'bg-red-500/10 text-red-500 border-b border-red-500/30'
-          }`}>
-            {validationMessage.type === 'success' ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
-            <span className="whitespace-pre-line">{validationMessage.text}</span>
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+                JSON Schema
+              </label>
+              <button
+                onClick={handleValidate}
+                className="text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 px-2 py-1 rounded transition-all"
+              >
+                Проверить схему
+              </button>
+            </div>
+            <textarea
+              value={localSchema}
+              onChange={(e) => {
+                setLocalSchema(e.target.value);
+                setValidationError(null);
+              }}
+              rows={15}
+              className="w-full px-3 py-2 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-gray-500 focus:ring-2 focus:ring-gray-500/20 text-sm text-gray-300 font-mono resize-none"
+              placeholder={DEFAULT_SCHEMA}
+              spellCheck={false}
+            />
+            {validationError && (
+              <div className={`mt-2 text-xs px-3 py-2 rounded ${
+                validationError.includes('✓')
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-red-500/10 text-red-400 border border-red-500/30'
+              }`}>
+                {validationError}
+              </div>
+            )}
           </div>
-        )}
 
-        {/* Editor */}
-        <div className="flex-1 overflow-hidden p-4 min-h-0">
-          <div className="h-full flex flex-col">
-            <div className="text-xs text-gray-400 mb-2">JSON Schema (Draft 7)</div>
-            <div className="flex-1 min-h-0">
-              <JsonEditor
-                value={schemaText}
-                onChange={setSchemaText}
-                placeholder='{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "type": "object",
-  "properties": {
-    "name": { "type": "string" }
-  }
-}'
-              />
+          <div className="p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+            <div className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">
+              Подсказка по типам
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[11px] text-gray-500">
+              <div><span className="text-indigo-400">"type": "object"</span> — объект с полями</div>
+              <div><span className="text-indigo-400">"type": "array"</span> — массив</div>
+              <div><span className="text-indigo-400">"type": "string"</span> — строка</div>
+              <div><span className="text-indigo-400">"type": "integer"</span> — целое число</div>
+              <div><span className="text-indigo-400">"type": "number"</span> — число</div>
+              <div><span className="text-indigo-400">"type": "boolean"</span> — true/false</div>
+              <div><span className="text-indigo-400">"required": [...]</span> — обязательные поля</div>
+              <div><span className="text-indigo-400">"default": ...</span> — значение по умолчанию</div>
             </div>
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[#3d3d3d] bg-[#1e1e1e]">
+        <div className="px-6 py-4 border-t border-[rgba(255,255,255,0.08)] bg-[#1e1e1e] flex justify-between gap-3">
           <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm text-gray-300 hover:bg-[#2d2d2d] rounded transition-colors"
+            onClick={handleApplyExample}
+            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-all"
           >
-            Cancel
+            <Check size={16} />
+            Применить пример
           </button>
-          <button
-            onClick={handleSave}
-            className="flex items-center gap-1.5 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded text-sm transition-colors"
-          >
-            <Save size={14} />
-            Save Schema
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 bg-[#2d2d2d] hover:bg-[#363636] text-gray-300 rounded-lg text-sm font-medium transition-all"
+            >
+              Отмена
+            </button>
+            <button
+              onClick={handleSave}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-all"
+            >
+              Сохранить схему
+            </button>
+          </div>
         </div>
       </div>
     </div>
