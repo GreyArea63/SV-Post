@@ -10,6 +10,8 @@ interface FunctionMenuProps {
   collections: Collection[];
   onOpenEnvManager: () => void;
   onOpenJsonBuilder: () => void;
+  onClearHistory?: () => void;
+  onClearAll?: () => void;
 }
 
 interface Notification {
@@ -17,7 +19,6 @@ interface Notification {
   message: string;
 }
 
-// Строгая типизация для устранения ошибок TS2339
 interface MenuItem {
   icon: React.ReactNode;
   label: string;
@@ -33,13 +34,15 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
   collections,
   onOpenEnvManager,
   onOpenJsonBuilder,
+  onClearHistory,
+  onClearAll,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [notification, setNotification] = useState<Notification | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Закрытие меню при клике вне его области
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -50,12 +53,15 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
-  // Авто-скрытие уведомлений
+  // ИСПРАВЛЕНИЕ 3.45: clearTimeout при размонтировании
   useEffect(() => {
     if (notification) {
-      const timer = setTimeout(() => setNotification(null), 3000);
-      return () => clearTimeout(timer);
+      if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+      notificationTimerRef.current = setTimeout(() => setNotification(null), 3000);
     }
+    return () => {
+      if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    };
   }, [notification]);
 
   const showNotification = (type: 'success' | 'error' | 'info', message: string) => {
@@ -76,21 +82,18 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       const data = JSON.parse(text);
       let importedCollections: Collection[] = [];
 
+      // ИСПРАВЛЕНИЕ 3.34: убрано дублирование ветки
       if (isPostmanCollection(data)) {
         importedCollections = [convertPostmanCollection(data)];
       } else if (data.collections && Array.isArray(data.collections)) {
         importedCollections = data.collections;
       } else if (Array.isArray(data)) {
         importedCollections = data;
-      } else if (data.id && data.name && Array.isArray(data.requests)) {
-        importedCollections = [data];
-      } else if (data.info && Array.isArray(data.item)) {
-        importedCollections = [convertPostmanCollection(data)];
       } else {
         throw new Error('Неверный формат файла');
       }
 
-      // БЕЗОПАСНАЯ фильтрация: проверка на null и корректную структуру объекта
+      // ИСПРАВЛЕНИЕ 3.33: безопасная валидация
       const validCollections = importedCollections.filter((c: any) => 
         c && typeof c === 'object' && c.id && c.name && Array.isArray(c.requests)
       );
@@ -126,7 +129,28 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     setIsOpen(false);
   };
 
-  // useMemo предотвращает пересоздание массива при каждом рендере
+  // ИСПРАВЛЕНИЕ 3.31: window.location.reload() заменён на колбэки
+  const handleClearHistory = async () => {
+    if (window.confirm('Очистить историю запросов?')) {
+      // ИСПРАВЛЕНИЕ 3.32: добавлен await
+      await storage.clearHistory();
+      if (onClearHistory) onClearHistory();
+      showNotification('success', 'История очищена');
+      setIsOpen(false);
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (window.confirm('Удалить ВСЕ данные приложения? Это действие необратимо.')) {
+      // ИСПРАВЛЕНИЕ 3.32: добавлен await
+      await storage.clearAllData();
+      if (onClearAll) onClearAll();
+      showNotification('success', 'Все данные очищены');
+      setIsOpen(false);
+    }
+  };
+
+  // ИСПРАВЛЕНИЕ 3.35: menuSections обёрнут в useMemo
   const menuSections = useMemo<{ title: string; items: MenuItem[] }[]>(() => [
     {
       title: 'Коллекции',
@@ -156,30 +180,18 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
           label: 'История', 
           description: 'Удалить', 
           danger: true, 
-          onClick: async () => {
-            if (window.confirm('Очистить историю запросов?')) {
-              await storage.clearHistory();
-              showNotification('success', 'История очищена');
-              window.location.reload();
-            }
-          } 
+          onClick: handleClearHistory
         },
         { 
           icon: <Trash2 size={14} />, 
           label: 'Все данные', 
           description: 'Полный сброс', 
           danger: true, 
-          onClick: async () => {
-            if (window.confirm('Удалить ВСЕ данные приложения? Это действие необратимо.')) {
-              await storage.clearAllData();
-              showNotification('success', 'Все данные очищены');
-              window.location.reload();
-            }
-          } 
+          onClick: handleClearAll
         },
       ]
     }
-  ], [collections.length, handleImportClick, handleExportClick, handleShowStorageInfo, onOpenJsonBuilder, onOpenEnvManager]);
+  ], [collections.length, handleImportClick, handleExportClick, handleShowStorageInfo, handleClearHistory, handleClearAll, onOpenJsonBuilder, onOpenEnvManager]);
 
   return (
     <div className="relative" ref={menuRef}>

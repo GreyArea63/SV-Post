@@ -14,13 +14,22 @@ const escapeHtml = (text: string): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+// ИСПРАВЛЕНИЕ 3.17: улучшенный regex для подсветки
 const highlightLine = (line: string): string => {
   const escaped = escapeHtml(line);
   return escaped
+    // Ключи: "key":
     .replace(/(&quot;[^&]*?&quot;)(\s*:)/g, '<span class="json-key">$1</span>$2')
+    // Строки после двоеточия
     .replace(/:\s*(&quot;.*?&quot;)/g, ': <span class="json-string">$1</span>')
-    .replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="json-number">$1</span>')
-    .replace(/:\s*(true|false|null)/g, ': <span class="json-literal">$1</span>');
+    // Числа (включая отрицательные и дробные)
+    .replace(/:\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)/g, ': <span class="json-number">$1</span>')
+    // Литералы
+    .replace(/:\s*(true|false|null)/g, ': <span class="json-literal">$1</span>')
+    // Отдельные литералы в массивах
+    .replace(/^\s*(true|false|null)\s*$/g, '<span class="json-literal">$1</span>')
+    // Отдельные числа в массивах
+    .replace(/^\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*$/g, '<span class="json-number">$1</span>');
 };
 
 const highlight = (value: string, placeholder?: string): string => {
@@ -81,20 +90,23 @@ export const JsonEditor = ({
     const ta = textareaRef.current;
     if (!ta) return;
     
+    // ИСПРАВЛЕНИЕ 3.15: синхронизация скролла gutter через transform
     if (preRef.current) {
       preRef.current.scrollTop = ta.scrollTop;
       preRef.current.scrollLeft = ta.scrollLeft;
     }
     if (gutterRef.current) {
-      gutterRef.current.scrollTop = ta.scrollTop;
+      // Используем transform вместо scrollTop для overflow-y-hidden
+      gutterRef.current.style.transform = `translateY(${-ta.scrollTop}px)`;
     }
   };
 
   return (
     <div className="relative flex h-full w-full bg-[#1e1e1e] rounded-lg overflow-hidden border border-[rgba(255,255,255,0.08)]">
+      {/* ИСПРАВЛЕНИЕ 3.15: gutter с transform вместо scrollTop */}
       <div
         ref={gutterRef}
-        className="flex-shrink-0 w-12 bg-[#252525] border-r border-[rgba(255,255,255,0.08)] text-gray-600 text-xs font-mono py-3 px-2 select-none overflow-y-hidden"
+        className="flex-shrink-0 w-12 bg-[#252525] border-r border-[rgba(255,255,255,0.08)] text-gray-600 text-xs font-mono py-3 px-2 select-none overflow-hidden will-change-transform"
       >
         {Array.from({ length: lineCount }, (_, i) => (
           <div key={i} className="leading-6 text-right h-6">
@@ -111,12 +123,14 @@ export const JsonEditor = ({
           dangerouslySetInnerHTML={{ __html: highlightedCode }}
         />
 
+        {/* ИСПРАВЛЕНИЕ 3.16: wrap="off" для синхронизации с pre */}
         <textarea
           ref={textareaRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onScroll={handleScroll}
           spellCheck={false}
+          wrap="off"
           className="absolute inset-0 w-full h-full m-0 p-3 font-mono text-sm leading-6 bg-transparent text-transparent caret-white resize-none outline-none border-0 overflow-auto whitespace-pre"
           style={{ color: 'transparent', caretColor: 'white' }}
         />

@@ -11,7 +11,7 @@ import { JsonBuilder } from './components/JsonBuilder';
 import { HttpRequest, HttpResponse, HistoryItem, Collection, Environment, KeyValuePair } from './types';
 import { storage } from './utils/storage';
 import { generateId, replaceVariables, parseKeyValuePairs } from './utils/helpers';
-import { X, CheckCircle, AlertCircle, Info } from 'lucide-react';
+import { X, CheckCircle, AlertCircle, Info, Save } from 'lucide-react';
 
 interface Tab {
   id: string;
@@ -19,6 +19,8 @@ interface Tab {
   response: HttpResponse | null;
   loading: boolean;
   error: string | null;
+  // Snapshot для отслеживания изменений (без method и name)
+  savedSnapshot?: string;
 }
 
 interface Toast {
@@ -27,21 +29,55 @@ interface Toast {
   message: string;
 }
 
-const DEFAULT_REQUEST: HttpRequest = {
+const createDefaultRequest = (method: string = 'GET'): HttpRequest => ({
   id: generateId(),
-  name: 'New Request',
-  method: 'GET',
+  name: method === 'GET' ? 'New Request' : `New ${method} Request`,
+  method,
   url: '',
   headers: [],
   queryParams: [],
   body: { type: 'none', content: '' },
-};
+});
+
+const DEFAULT_REQUEST = createDefaultRequest();
 
 const MAX_TABS = 10;
 
+const isTabEmpty = (tab: Tab): boolean => {
+  return (
+    tab.request.name === 'New Request' &&
+    tab.request.url === '' &&
+    tab.request.method === 'GET' &&
+    tab.request.headers.length === 0 &&
+    tab.request.queryParams.length === 0 &&
+    tab.request.body.type === 'none' &&
+    tab.response === null
+  );
+};
+
+// Создаём snapshot для сравнения (исключая method и name, которые меняются при смене метода)
+const createSnapshot = (request: HttpRequest): string => {
+  const { method, name, ...rest } = request;
+  return JSON.stringify(rest);
+};
+
+// Проверяем, есть ли несохранённые изменения (сравниваем snapshot без method/name)
+const hasUnsavedChanges = (tab: Tab): boolean => {
+  if (!tab.savedSnapshot) return false;
+  const currentSnapshot = createSnapshot(tab.request);
+  return currentSnapshot !== tab.savedSnapshot;
+};
+
 function App() {
   const [tabs, setTabs] = useState<Tab[]>([
-    { id: generateId(), request: DEFAULT_REQUEST, response: null, loading: false, error: null }
+    { 
+      id: generateId(), 
+      request: DEFAULT_REQUEST, 
+      response: null, 
+      loading: false, 
+      error: null, 
+      savedSnapshot: createSnapshot(DEFAULT_REQUEST) 
+    }
   ]);
   const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -53,6 +89,7 @@ function App() {
   const [showJsonBuilder, setShowJsonBuilder] = useState(false);
   const [runningRequest, setRunningRequest] = useState<{ request: HttpRequest; collectionName: string } | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [showSaveConfirm, setShowSaveConfirm] = useState<{ tabId: string; action: 'close' | 'switch' } | null>(null);
   
   const [requestHeight, setRequestHeight] = useState<number>(50);
   const [isResizing, setIsResizing] = useState(false);
@@ -105,6 +142,31 @@ function App() {
     };
   }, [isResizing]);
 
+  // Ctrl+S — сохранение текущей вкладки (обновляет snapshot)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleSaveCurrentTab();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTabId, tabs]);
+
+  // Предупреждение при закрытии вкладки браузера
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const hasChanges = tabs.some(tab => hasUnsavedChanges(tab));
+      if (hasChanges) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [tabs]);
+
   const activeTab = tabs.find(tab => tab.id === activeTabId);
 
   const getActiveEnvironment = useCallback((): Environment | null => {
@@ -135,12 +197,16 @@ function App() {
     try {
       const processedRequest = processRequest(activeTab.request);
       let url = processedRequest.url;
+
       const queryParams = parseKeyValuePairs(processedRequest.queryParams);
-      if (Object.keys(queryParams).length > 0) {
-        url += (url.includes('?') ? '&' : '?') + new URLSearchParams(queryParams).toString();
-      }
+      const urlSearchParams = new URLSearchParams(url.split('?')[1] || '');
+      
+      Object.entries(queryParams).forEach(([key, value]) => {
+        urlSearchParams.set(key, value);
+      });
 
       const headers = parseKeyValuePairs(processedRequest.headers);
+      
       if (processedRequest.auth) {
         if (processedRequest.auth.type === 'bearer' && processedRequest.auth.token) {
           headers['Authorization'] = `Bearer ${processedRequest.auth.token}`;
@@ -150,28 +216,81 @@ function App() {
           if (processedRequest.auth.addTo === 'header') {
             headers[processedRequest.auth.apiKey] = processedRequest.auth.apiValue;
           } else {
-            const sp = new URLSearchParams(url.split('?')[1] || '');
-            sp.set(processedRequest.auth.apiKey, processedRequest.auth.apiValue);
-            url += (url.includes('?') ? '&' : '?') + sp.toString();
+            urlSearchParams.set(processedRequest.auth.apiKey, processedRequest.auth.apiValue);
           }
         } else if (processedRequest.auth.type === 'oauth2' && processedRequest.auth.accessToken) {
           headers['Authorization'] = `${processedRequest.auth.tokenType || 'Bearer'} ${processedRequest.auth.accessToken}`;
         }
       }
 
+      const queryString = urlSearchParams.toString();
+      const baseUrl = url.split('?')[0];
+      url = queryString ? `${baseUrl}?${queryString}` : baseUrl;
+
       const startTime = Date.now();
       const config: any = { method: processedRequest.method.toLowerCase(), url, headers, timeout: 30000 };
 
-      if (processedRequest.body.type !== 'none' && ['POST', 'PUT', 'PATCH'].includes(processedRequest.method)) {
-        if (processedRequest.body.type === 'json' || processedRequest.body.type === 'raw') {
-          try {
-            config.data = JSON.parse(processedRequest.body.content);
-            headers['Content-Type'] = 'application/json';
-          } catch {
+      if (processedRequest.body.type !== 'none' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(processedRequest.method)) {
+        switch (processedRequest.body.type) {
+          case 'json':
+          case 'raw':
+            try {
+              config.data = JSON.parse(processedRequest.body.content);
+              headers['Content-Type'] = 'application/json';
+            } catch {
+              config.data = processedRequest.body.content;
+              headers['Content-Type'] = 'text/plain';
+            }
+            break;
+            
+          case 'x-www-form-urlencoded':
+            if (processedRequest.body.form && processedRequest.body.form.length > 0) {
+              const formData = new URLSearchParams();
+              processedRequest.body.form.forEach(field => {
+                if (field.enabled && field.key) {
+                  formData.append(field.key, field.value);
+                }
+              });
+              config.data = formData.toString();
+              headers['Content-Type'] = 'application/x-www-form-urlencoded';
+            } else {
+              config.data = processedRequest.body.content;
+              headers['Content-Type'] = 'application/x-www-form-urlencoded';
+            }
+            break;
+            
+          case 'form-data':
+            if (processedRequest.body.form && processedRequest.body.form.length > 0) {
+              const formData = new FormData();
+              processedRequest.body.form.forEach(field => {
+                if (field.enabled && field.key) {
+                  formData.append(field.key, field.value);
+                }
+              });
+              config.data = formData;
+              delete headers['Content-Type'];
+            }
+            break;
+            
+          case 'graphql':
+            try {
+              const graphqlData = JSON.parse(processedRequest.body.content);
+              config.data = {
+                query: graphqlData.query || '',
+                variables: graphqlData.variables || {},
+                operationName: graphqlData.operationName || null,
+              };
+              headers['Content-Type'] = 'application/json';
+            } catch {
+              config.data = { query: processedRequest.body.content };
+              headers['Content-Type'] = 'application/json';
+            }
+            break;
+            
+          case 'binary':
             config.data = processedRequest.body.content;
-          }
-        } else {
-          config.data = processedRequest.body.content;
+            headers['Content-Type'] = 'application/octet-stream';
+            break;
         }
       }
 
@@ -218,13 +337,37 @@ function App() {
     }
   }, [activeTab, activeTabId, processRequest, history, showToast]);
 
-  const handleTabClick = useCallback((tabId: string) => setActiveTabId(tabId), []);
+  // Переключение вкладки — НЕ спрашиваем сохранение при смене метода
+  const handleTabClick = useCallback((tabId: string) => {
+    if (activeTab && hasUnsavedChanges(activeTab) && tabId !== activeTabId) {
+      setShowSaveConfirm({ tabId, action: 'switch' });
+    } else {
+      setActiveTabId(tabId);
+    }
+  }, [activeTab, activeTabId]);
 
+  // Закрытие вкладки — спрашиваем только если есть несохранённые изменения
   const handleTabClose = useCallback((tabId: string) => {
+    const tabToClose = tabs.find(t => t.id === tabId);
+    if (tabToClose && hasUnsavedChanges(tabToClose)) {
+      setShowSaveConfirm({ tabId, action: 'close' });
+    } else {
+      performTabClose(tabId);
+    }
+  }, [tabs]);
+
+  const performTabClose = useCallback((tabId: string) => {
     setTabs(prevTabs => {
       const newTabs = prevTabs.filter(tab => tab.id !== tabId);
       if (newTabs.length === 0) {
-        const defaultTab = { id: generateId(), request: { ...DEFAULT_REQUEST, id: generateId() }, response: null, loading: false, error: null };
+        const defaultTab = { 
+          id: generateId(), 
+          request: createDefaultRequest(), 
+          response: null, 
+          loading: false, 
+          error: null, 
+          savedSnapshot: createSnapshot(createDefaultRequest()) 
+        };
         setActiveTabId(defaultTab.id);
         return [defaultTab];
       }
@@ -233,26 +376,98 @@ function App() {
     });
   }, [activeTabId]);
 
+  // Ctrl+S — сохраняем текущий snapshot
+  const handleSaveCurrentTab = useCallback(() => {
+    if (!activeTab) return;
+    
+    const newSnapshot = createSnapshot(activeTab.request);
+    setTabs(prevTabs => prevTabs.map(tab => 
+      tab.id === activeTabId ? { ...tab, savedSnapshot: newSnapshot } : tab
+    ));
+    showToast('success', 'Запрос сохранён (Ctrl+S)');
+  }, [activeTab, activeTabId, showToast]);
+
+  const handleConfirmSave = useCallback(() => {
+    if (!showSaveConfirm) return;
+    
+    handleSaveCurrentTab();
+    
+    if (showSaveConfirm.action === 'close') {
+      performTabClose(showSaveConfirm.tabId);
+    } else if (showSaveConfirm.action === 'switch') {
+      setActiveTabId(showSaveConfirm.tabId);
+    }
+    
+    setShowSaveConfirm(null);
+  }, [showSaveConfirm, handleSaveCurrentTab, performTabClose]);
+
+  const handleDiscardChanges = useCallback(() => {
+    if (!showSaveConfirm) return;
+    
+    if (showSaveConfirm.action === 'close') {
+      performTabClose(showSaveConfirm.tabId);
+    } else if (showSaveConfirm.action === 'switch') {
+      setActiveTabId(showSaveConfirm.tabId);
+    }
+    
+    setShowSaveConfirm(null);
+  }, [showSaveConfirm, performTabClose]);
+
   const handleNewTab = useCallback(() => {
     if (tabs.length >= MAX_TABS) {
       showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
       return;
     }
-    const newTab: Tab = { id: generateId(), request: { ...DEFAULT_REQUEST, id: generateId() }, response: null, loading: false, error: null };
+    const newRequest = createDefaultRequest();
+    const newTab: Tab = { 
+      id: generateId(), 
+      request: newRequest, 
+      response: null, 
+      loading: false, 
+      error: null, 
+      savedSnapshot: createSnapshot(newRequest) 
+    };
     setTabs(prevTabs => [...prevTabs, newTab]);
     setActiveTabId(newTab.id);
   }, [tabs.length, showToast]);
 
+  // Смена метода — НЕ триггерит сохранение
   const handleMethodChange = useCallback((newMethod: string) => {
+    if (!activeTab) return;
+    
+    if (isTabEmpty(activeTab)) {
+      // На пустой вкладке меняем метод и обновляем snapshot (чтобы не спрашивать сохранение)
+      const updatedRequest = { 
+        ...activeTab.request, 
+        method: newMethod, 
+        name: newMethod === 'GET' ? 'New Request' : `New ${newMethod} Request` 
+      };
+      const newSnapshot = createSnapshot(updatedRequest);
+      setTabs(prevTabs => prevTabs.map(tab => 
+        tab.id === activeTabId ? { ...tab, request: updatedRequest, savedSnapshot: newSnapshot } : tab
+      ));
+      showToast('info', `Метод изменён на ${newMethod}`);
+      return;
+    }
+    
     if (tabs.length >= MAX_TABS) {
       showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок. Закройте одну из вкладок.`);
       return;
     }
-    const newTab: Tab = { id: generateId(), request: { ...DEFAULT_REQUEST, id: generateId(), method: newMethod, name: `New ${newMethod} Request` }, response: null, loading: false, error: null };
+    
+    const newRequest = createDefaultRequest(newMethod);
+    const newTab: Tab = { 
+      id: generateId(), 
+      request: newRequest, 
+      response: null, 
+      loading: false, 
+      error: null,
+      savedSnapshot: createSnapshot(newRequest)
+    };
     setTabs(prevTabs => [...prevTabs, newTab]);
     setActiveTabId(newTab.id);
     showToast('info', `Создана новая вкладка: ${newMethod}`);
-  }, [tabs.length, showToast]);
+  }, [activeTab, activeTabId, tabs.length, showToast]);
 
   const handleRequestChange = useCallback((request: HttpRequest) => {
     setTabs(prevTabs => prevTabs.map(tab => tab.id === activeTabId ? { ...tab, request } : tab));
@@ -294,27 +509,47 @@ function App() {
     const collection = collections.find(c => c.id === collectionId);
     const request = collection?.requests.find(r => r.id === requestId);
     if (request) {
-      const isEmptyTab = activeTab && activeTab.request.name === 'New Request' && activeTab.request.url === '' && activeTab.response === null;
-      if (isEmptyTab) {
+      if (activeTab && isTabEmpty(activeTab)) {
         handleRequestChange(request);
+        // Обновляем snapshot при загрузке запроса из коллекции
+        setTabs(prevTabs => prevTabs.map(tab => 
+          tab.id === activeTabId ? { ...tab, savedSnapshot: createSnapshot(request) } : tab
+        ));
       } else {
         if (tabs.length >= MAX_TABS) { showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`); return; }
-        const newTab: Tab = { id: generateId(), request: { ...request, id: generateId() }, response: null, loading: false, error: null };
+        const newRequest = { ...request, id: generateId() };
+        const newTab: Tab = { 
+          id: generateId(), 
+          request: newRequest, 
+          response: null, 
+          loading: false, 
+          error: null, 
+          savedSnapshot: createSnapshot(newRequest) 
+        };
         setTabs(prevTabs => [...prevTabs, newTab]);
         setActiveTabId(newTab.id);
       }
       showToast('info', `Загружен запрос: ${request.name}`);
     }
-  }, [collections, activeTab, tabs.length, handleRequestChange, showToast]);
+  }, [collections, activeTab, activeTabId, tabs.length, handleRequestChange, showToast]);
 
   const handleSelectHistory = useCallback((item: HistoryItem) => {
-    const isEmptyTab = activeTab && activeTab.request.name === 'New Request' && activeTab.request.url === '' && activeTab.response === null;
-    if (isEmptyTab) {
+    if (activeTab && isTabEmpty(activeTab)) {
       handleRequestChange(item.request);
-      setTabs(prevTabs => prevTabs.map(tab => tab.id === activeTabId ? { ...tab, response: item.response } : tab));
+      setTabs(prevTabs => prevTabs.map(tab => 
+        tab.id === activeTabId ? { ...tab, response: item.response, savedSnapshot: createSnapshot(item.request) } : tab
+      ));
     } else {
       if (tabs.length >= MAX_TABS) { showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`); return; }
-      const newTab: Tab = { id: generateId(), request: { ...item.request, id: generateId() }, response: item.response, loading: false, error: null };
+      const newRequest = { ...item.request, id: generateId() };
+      const newTab: Tab = { 
+        id: generateId(), 
+        request: newRequest, 
+        response: item.response, 
+        loading: false, 
+        error: null, 
+        savedSnapshot: createSnapshot(newRequest) 
+      };
       setTabs(prevTabs => [...prevTabs, newTab]);
       setActiveTabId(newTab.id);
     }
@@ -333,10 +568,18 @@ function App() {
   }, []);
 
   const handleSaveEnvironments = useCallback(async (envs: Environment[], globals: KeyValuePair[]) => {
-    setEnvironments(envs); setGlobalVariables(globals);
+    setEnvironments(envs); 
+    setGlobalVariables(globals);
+    
+    if (activeEnvId && !envs.find(e => e.id === activeEnvId)) {
+      setActiveEnvId(null);
+      await storage.setActiveEnvironment(null);
+      showToast('info', 'Активное окружение было удалено');
+    }
+    
     await Promise.all([storage.saveEnvironments(envs), storage.saveGlobalVariables(globals)]);
     showToast('success', 'Окружения сохранены');
-  }, [showToast]);
+  }, [showToast, activeEnvId]);
 
   const handleImportEnvironments = useCallback(async (envs: Environment[]) => {
     const existingIds = new Set(environments.map(e => e.id));
@@ -359,10 +602,32 @@ function App() {
     showToast('success', 'Окружения экспортированы');
   }, [showToast]);
 
+  const handleClearHistory = useCallback(() => {
+    setHistory([]);
+    showToast('info', 'История очищена');
+  }, [showToast]);
+
+  const handleClearAll = useCallback(() => {
+    setHistory([]);
+    setCollections([]);
+    setEnvironments([]);
+    setGlobalVariables([]);
+    setActiveEnvId(null);
+    showToast('info', 'Все данные очищены');
+  }, [showToast]);
+
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <div className="h-8 bg-[#1e1e1e] border-b border-[rgba(255,255,255,0.08)] flex items-center px-3 gap-2 shrink-0">
-        <FunctionMenu onImport={handleImportCollections} onExportAll={handleExportAllCollections} collections={collections} onOpenEnvManager={() => setShowEnvManager(true)} onOpenJsonBuilder={() => setShowJsonBuilder(true)} />
+        <FunctionMenu 
+          onImport={handleImportCollections} 
+          onExportAll={handleExportAllCollections} 
+          collections={collections} 
+          onOpenEnvManager={() => setShowEnvManager(true)} 
+          onOpenJsonBuilder={() => setShowJsonBuilder(true)}
+          onClearHistory={handleClearHistory}
+          onClearAll={handleClearAll}
+        />
         <div className="h-4 w-px bg-[rgba(255,255,255,0.1)]" />
         <h1 className="text-sm font-bold text-gray-200">SV-Post</h1>
         <div className="ml-auto flex items-center gap-2">
@@ -391,7 +656,7 @@ function App() {
             onTabClick={handleTabClick} 
             onTabClose={handleTabClose} 
             onNewTab={handleNewTab} 
-            onTabsReorder={(newTabs: any) => setTabs(newTabs)} 
+            onTabsReorder={setTabs}
           />
           <div className="flex-1 flex flex-col overflow-hidden" ref={containerRef}>
             <div className="flex flex-col min-h-0" style={{ height: `${requestHeight}%` }}>
@@ -407,7 +672,60 @@ function App() {
 
       {showEnvManager && <EnvironmentManager environments={environments} globalVariables={globalVariables} activeEnvId={activeEnvId} onClose={() => setShowEnvManager(false)} onSave={handleSaveEnvironments} onImport={handleImportEnvironments} onExport={handleExportEnvironments} />}
       {showJsonBuilder && <JsonBuilder onClose={() => setShowJsonBuilder(false)} />}
-      {runningRequest && <CollectionRunner requests={[runningRequest.request]} collectionName={runningRequest.collectionName} environments={environments} activeEnvId={activeEnvId} globalVariables={globalVariables} onClose={() => setRunningRequest(null)} />}
+      
+      {runningRequest && (
+        <CollectionRunner 
+          requests={[runningRequest.request]} 
+          collectionName={runningRequest.collectionName} 
+          environments={environments} 
+          activeEnvId={activeEnvId} 
+          globalVariables={globalVariables} 
+          onError={(msg) => showToast('error', msg)}
+          onClose={() => setRunningRequest(null)} 
+        />
+      )}
+
+      {/* Модальное окно подтверждения сохранения */}
+      {showSaveConfirm && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[400] p-4">
+          <div className="bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg shadow-2xl w-full max-w-md p-6 animate-scale-in">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center">
+                <Save size={20} className="text-amber-400" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-gray-200">Несохранённые изменения</h3>
+                <p className="text-xs text-gray-500">Вкладка содержит изменения</p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-300 mb-6">
+              {showSaveConfirm.action === 'close' 
+                ? 'Вы хотите сохранить изменения перед закрытием вкладки?' 
+                : 'Вы хотите сохранить изменения перед переключением вкладки?'}
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowSaveConfirm(null)}
+                className="px-4 py-2 bg-[#2d2d2d] hover:bg-[#363636] text-gray-300 rounded-lg text-sm font-medium transition-all"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={handleDiscardChanges}
+                className="px-4 py-2 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-400 rounded-lg text-sm font-medium transition-all"
+              >
+                Не сохранять
+              </button>
+              <button
+                onClick={handleConfirmSave}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-all"
+              >
+                Сохранить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="fixed top-16 right-4 z-[300] space-y-2">
         {toasts.map(toast => (

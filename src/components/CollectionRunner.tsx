@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { X, Play, Square, CheckCircle, XCircle, Clock, Upload, TrendingUp, TrendingDown, Loader2, AlertTriangle, Copy, MessageSquare, ExternalLink } from 'lucide-react';
 import { HttpRequest, Environment, KeyValuePair } from '../types';
 import { parseCSV } from '../utils/csvParser';
@@ -7,6 +7,8 @@ import axios from 'axios';
 
 interface RunResult {
   iteration: number;
+  requestIndex: number;
+  requestName: string;
   status: number | string;
   success: boolean;
   time: number;
@@ -27,7 +29,11 @@ interface CollectionRunnerProps {
   activeEnvId: string | null;
   globalVariables: KeyValuePair[];
   onClose: () => void;
+  onError?: (message: string) => void;
 }
+
+// ИСПРАВЛЕНИЕ 3.25: ограничение результатов
+const MAX_RESULTS = 1000;
 
 const HTTP_ERROR_DESCRIPTIONS: Record<number, { title: string; description: string; solution: string }> = {
   400: { title: 'Bad Request — Неверный запрос', description: 'Сервер не может обработать запрос из-за синтаксической ошибки.', solution: 'Проверьте правильность JSON-структуры и формат данных.' },
@@ -73,7 +79,8 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
   environments,
   activeEnvId,
   globalVariables,
-  onClose
+  onClose,
+  onError,
 }) => {
   const [iterations, setIterations] = useState(1);
   const [delay, setDelay] = useState(0);
@@ -82,11 +89,41 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
   const [isRunning, setIsRunning] = useState(false);
   const [currentIteration, setCurrentIteration] = useState(0);
   const [results, setResults] = useState<RunResult[]>([]);
-  const [isCancelled, setIsCancelled] = useState(false);
   const [totalIterations, setTotalIterations] = useState(0);
   const [selectedError, setSelectedError] = useState<RunResult | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   
+  const isCancelledRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const onErrorRef = useRef(onError);
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
+  useEffect(() => {
+    if (parsedData.length > 0) {
+      setTotalIterations(Math.min(iterations, parsedData.length));
+    } else {
+      setTotalIterations(iterations);
+    }
+  }, [iterations, parsedData]);
+
+  // ИСПРАВЛЕНИЕ 3.45: clearTimeout для уведомлений
+  const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (copyFeedbackTimerRef.current) clearTimeout(copyFeedbackTimerRef.current);
+    };
+  }, []);
+
+  const showError = useCallback((message: string) => {
+    if (onErrorRef.current) {
+      onErrorRef.current(message);
+    } else {
+      window.alert(message);
+    }
+  }, []);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -96,26 +133,27 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     
     try {
       if (file.name.endsWith('.json')) {
-        const data = Array.isArray(JSON.parse(text)) ? JSON.parse(text) : [JSON.parse(text)];
+        const parsed = JSON.parse(text);
+        const data = Array.isArray(parsed) ? parsed : [parsed];
         setParsedData(data);
-        setTotalIterations(data.length);
         setIterations(data.length);
+        setTotalIterations(data.length);
       } else if (file.name.endsWith('.csv')) {
         const data = parseCSV(text);
         setParsedData(data);
-        setTotalIterations(data.length);
         setIterations(data.length);
+        setTotalIterations(data.length);
       } else {
-        alert('Поддерживаются только .json и .csv');
+        showError('Поддерживаются только .json и .csv файлы');
       }
-    } catch {
-      alert('Ошибка парсинга файла');
+    } catch (err: any) {
+      showError('Ошибка парсинга файла: ' + (err.message || 'неизвестная ошибка'));
     }
   };
 
   const startRun = useCallback(async () => {
+    isCancelledRef.current = false;
     setIsRunning(true);
-    setIsCancelled(false);
     setResults([]);
     setCurrentIteration(0);
     abortControllerRef.current = new AbortController();
@@ -125,9 +163,11 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     const globals = globalVariables.filter(v => v.enabled);
     const dataRows = parsedData.length > 0 ? parsedData.slice(0, iterations) : Array(iterations).fill({});
     const totalRequests = requests.length;
+    const effectiveIterations = dataRows.length;
 
-    for (let i = 0; i < dataRows.length; i++) {
-      if (isCancelled) break;
+    for (let i = 0; i < effectiveIterations; i++) {
+      if (isCancelledRef.current) break;
+      
       setCurrentIteration(i + 1);
       const rowData = dataRows[i];
       const dataVars: KeyValuePair[] = Object.entries(rowData).map(([key, value]) => ({
@@ -136,7 +176,8 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
       const allVariables = [...globals, ...envVars, ...dataVars];
 
       for (let j = 0; j < totalRequests; j++) {
-        if (isCancelled) break;
+        if (isCancelledRef.current) break;
+        
         const req = requests[j];
         const startTime = Date.now();
 
@@ -159,7 +200,17 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
           if (processedReq.auth?.type === 'bearer' && processedReq.auth.token) {
             headers['Authorization'] = `Bearer ${processedReq.auth.token}`;
           } else if (processedReq.auth?.type === 'basic' && processedReq.auth.username) {
-            headers['Authorization'] = `Basic ${btoa(`${processedReq.auth.username}:${processedReq.auth.password || ''}`)}`;
+            headers['Authorization'] = `Basic ${btoa(unescape(encodeURIComponent(`${processedReq.auth.username}:${processedReq.auth.password || ''}`)))}`;
+          } else if (processedReq.auth?.type === 'apikey' && processedReq.auth.apiKey && processedReq.auth.apiValue) {
+            if (processedReq.auth.addTo === 'header') {
+              headers[processedReq.auth.apiKey] = processedReq.auth.apiValue;
+            } else {
+              const sp = new URLSearchParams(url.split('?')[1] || '');
+              sp.set(processedReq.auth.apiKey, processedReq.auth.apiValue);
+              url += (url.includes('?') ? '&' : '?') + sp.toString();
+            }
+          } else if (processedReq.auth?.type === 'oauth2' && processedReq.auth.accessToken) {
+            headers['Authorization'] = `${processedReq.auth.tokenType || 'Bearer'} ${processedReq.auth.accessToken}`;
           }
 
           const config: any = { 
@@ -167,7 +218,7 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
             signal: abortControllerRef.current!.signal 
           };
           
-          if (processedReq.body.type !== 'none' && ['POST', 'PUT', 'PATCH'].includes(processedReq.method)) {
+          if (processedReq.body.type !== 'none' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(processedReq.method)) {
             if (processedReq.body.type === 'json' || processedReq.body.type === 'raw') { 
               try {
                 config.data = JSON.parse(processedReq.body.content); 
@@ -181,45 +232,85 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
           }
 
           const response = await axios(config);
-          setResults(prev => [...prev, {
-            iteration: i + 1, status: response.status,
+          const newResult: RunResult = {
+            iteration: i + 1,
+            requestIndex: j,
+            requestName: req.name,
+            status: response.status,
             success: response.status >= 200 && response.status < 300,
-            time: Date.now() - startTime, requestData: rowData,
+            time: Date.now() - startTime,
+            requestData: rowData,
             requestMethod: processedReq.method,
             requestUrl: processedReq.url,
             requestHeaders: headers,
             requestBody: processedReq.body.content,
-            responseHeaders: response.headers as Record<string, string>,
+            responseHeaders: (response.headers as any).toJSON ? (response.headers as any).toJSON() : response.headers,
             responseData: response.data,
-          }]);
+          };
+          
+          // ИСПРАВЛЕНИЕ 3.25: ограничение результатов
+          setResults(prev => {
+            const updated = [...prev, newResult];
+            return updated.length > MAX_RESULTS ? updated.slice(-MAX_RESULTS) : updated;
+          });
         } catch (err: any) {
           if (axios.isCancel(err)) break;
-          setResults(prev => [...prev, {
-            iteration: i + 1, status: err.response?.status || 'Error',
-            success: false, time: Date.now() - startTime,
+          
+          const processedReqForError = {
+            ...req,
+            url: replaceVariables(req.url, allVariables),
+            headers: req.headers.map(h => ({ ...h, value: replaceVariables(h.value, allVariables) })),
+            queryParams: req.queryParams.map(p => ({ ...p, value: replaceVariables(p.value, allVariables) })),
+            body: { ...req.body, content: replaceVariables(req.body.content, allVariables) },
+          };
+          
+          const errorHeaders = parseKeyValuePairs(processedReqForError.headers);
+          let errorUrl = processedReqForError.url;
+          const errorQueryParams = parseKeyValuePairs(processedReqForError.queryParams);
+          if (Object.keys(errorQueryParams).length > 0) {
+            errorUrl += (errorUrl.includes('?') ? '&' : '?') + new URLSearchParams(errorQueryParams).toString();
+          }
+
+          const newResult: RunResult = {
+            iteration: i + 1,
+            requestIndex: j,
+            requestName: req.name,
+            status: err.response?.status || 'Error',
+            success: false,
+            time: Date.now() - startTime,
             error: err.message || 'Unknown error',
             requestData: rowData,
-            requestMethod: req.method,
-            requestUrl: req.url,
-            requestHeaders: parseKeyValuePairs(req.headers),
-            requestBody: req.body.content,
+            requestMethod: processedReqForError.method,
+            requestUrl: errorUrl,
+            requestHeaders: errorHeaders,
+            requestBody: processedReqForError.body.content,
             responseHeaders: err.response?.headers,
             responseData: err.response?.data,
-          }]);
+          };
+          
+          setResults(prev => {
+            const updated = [...prev, newResult];
+            return updated.length > MAX_RESULTS ? updated.slice(-MAX_RESULTS) : updated;
+          });
         }
 
-        if (delay > 0 && !isCancelled) {
+        if (delay > 0 && !isCancelledRef.current) {
           await new Promise(resolve => setTimeout(resolve, delay));
+        } else if (!isCancelledRef.current) {
+          await new Promise(resolve => setTimeout(resolve, 0));
         }
       }
     }
+    
+    isCancelledRef.current = false;
     setIsRunning(false);
-  }, [environments, activeEnvId, globalVariables, parsedData, iterations, requests, isCancelled, delay]);
+  }, [environments, activeEnvId, globalVariables, parsedData, iterations, requests, delay]);
 
   const stopRun = useCallback(() => {
-    setIsCancelled(true);
+    isCancelledRef.current = true;
     abortControllerRef.current?.abort();
-    setTimeout(() => setIsRunning(false), 100);
+    // ИСПРАВЛЕНИЕ 3.30: убран лишний setTimeout
+    setIsRunning(false);
   }, []);
 
   const handleRowDoubleClick = useCallback((result: RunResult) => {
@@ -247,7 +338,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
         </div>
         
         <div className="flex-1 flex overflow-hidden">
-          {/* Left Panel: Configuration / Status */}
           <div className="w-1/3 border-r border-[rgba(255,255,255,0.08)] p-4 space-y-4 overflow-y-auto">
             {!isRunning ? (
               <>
@@ -339,7 +429,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
             )}
           </div>
 
-          {/* Right Panel: Results */}
           <div className="w-2/3 flex flex-col">
             <div className="px-4 py-3 border-b border-[rgba(255,255,255,0.08)] bg-[#1e1e1e] flex items-center justify-between">
               <h3 className="text-sm font-medium text-gray-300">Результаты выполнения</h3>
@@ -372,6 +461,9 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-gray-200">
                       Итерация #{result.iteration}
+                      {result.requestName && (
+                        <span className="text-xs text-gray-500 ml-2">• {result.requestName}</span>
+                      )}
                       {result.requestData && Object.keys(result.requestData).length > 0 && (
                         <span className="text-xs text-gray-500 ml-2">
                           ({Object.entries(result.requestData).map(([k, v]) => `${k}=${v}`).join(', ')})
@@ -402,35 +494,51 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
         </div>
       </div>
 
-      {/* Модальное окно с деталями ошибки */}
       {selectedError && (
-        <ErrorDetailModal result={selectedError} onClose={() => setSelectedError(null)} />
+        <ErrorDetailModal 
+          result={selectedError} 
+          onClose={() => setSelectedError(null)}
+          copyFeedback={copyFeedback}
+          setCopyFeedback={setCopyFeedback}
+        />
       )}
     </div>
   );
 };
 
-// ============================================================
-// Модальное окно с деталями ошибки
-// ============================================================
 interface ErrorDetailModalProps {
   result: RunResult;
   onClose: () => void;
+  copyFeedback: string | null;
+  setCopyFeedback: (feedback: string | null) => void;
 }
 
-const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose }) => {
+const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose, copyFeedback, setCopyFeedback }) => {
   const [activeSection, setActiveSection] = useState<'overview' | 'request' | 'response'>('overview');
   const errorDetails = getErrorDetails(result.error || '', result.status);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text).catch(() => {
-      // Fallback для старых браузеров или HTTP
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopyFeedback(label);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopyFeedback(null), 1500);
+    }).catch(() => {
       const textarea = document.createElement('textarea');
       textarea.value = text;
       document.body.appendChild(textarea);
       textarea.select();
       document.execCommand('copy');
       document.body.removeChild(textarea);
+      setCopyFeedback(label);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopyFeedback(null), 1500);
     });
   };
 
@@ -532,8 +640,8 @@ const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose }) 
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">URL запроса</div>
-                  <button onClick={() => copyToClipboard(`${result.requestMethod} ${result.requestUrl || ''}`)} className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all">
-                    <Copy size={10} /> Копировать
+                  <button onClick={() => copyToClipboard(`${result.requestMethod} ${result.requestUrl || ''}`, 'url')} className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all">
+                    <Copy size={10} /> {copyFeedback === 'url' ? 'Скопировано!' : 'Копировать'}
                   </button>
                 </div>
                 <div className="p-3 bg-[#2d2d2d] rounded-lg border border-[rgba(255,255,255,0.08)] font-mono text-xs text-gray-300 break-all">
@@ -543,7 +651,12 @@ const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose }) 
 
               {result.requestHeaders && Object.keys(result.requestHeaders).length > 0 && (
                 <div>
-                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Заголовки</div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Заголовки</div>
+                    <button onClick={() => copyToClipboard(JSON.stringify(result.requestHeaders, null, 2), 'headers')} className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all">
+                      <Copy size={10} /> {copyFeedback === 'headers' ? 'Скопировано!' : 'Копировать'}
+                    </button>
+                  </div>
                   <div className="p-3 bg-[#2d2d2d] rounded-lg border border-[rgba(255,255,255,0.08)] space-y-1 max-h-[200px] overflow-y-auto">
                     {Object.entries(result.requestHeaders).map(([key, value]) => (
                       <div key={key} className="flex gap-2 text-xs">
@@ -559,8 +672,8 @@ const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose }) 
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Тело запроса</div>
-                    <button onClick={() => copyToClipboard(result.requestBody || '')} className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all">
-                      <Copy size={10} /> Копировать
+                    <button onClick={() => copyToClipboard(result.requestBody || '', 'body')} className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all">
+                      <Copy size={10} /> {copyFeedback === 'body' ? 'Скопировано!' : 'Копировать'}
                     </button>
                   </div>
                   <pre className="p-3 bg-[#2d2d2d] rounded-lg border border-[rgba(255,255,255,0.08)] font-mono text-xs text-gray-300 whitespace-pre-wrap max-h-[300px] overflow-auto">
@@ -575,7 +688,12 @@ const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose }) 
             <div className="space-y-4">
               {result.responseHeaders && Object.keys(result.responseHeaders).length > 0 && (
                 <div>
-                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Заголовки ответа</div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Заголовки ответа</div>
+                    <button onClick={() => copyToClipboard(JSON.stringify(result.responseHeaders, null, 2), 'respHeaders')} className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all">
+                      <Copy size={10} /> {copyFeedback === 'respHeaders' ? 'Скопировано!' : 'Копировать'}
+                    </button>
+                  </div>
                   <div className="p-3 bg-[#2d2d2d] rounded-lg border border-[rgba(255,255,255,0.08)] space-y-1 max-h-[150px] overflow-y-auto">
                     {Object.entries(result.responseHeaders).map(([key, value]) => (
                       <div key={key} className="flex gap-2 text-xs">
@@ -591,8 +709,8 @@ const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose }) 
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Тело ответа</div>
-                    <button onClick={() => copyToClipboard(typeof result.responseData === 'string' ? result.responseData : JSON.stringify(result.responseData, null, 2))} className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all">
-                      <Copy size={10} /> Копировать
+                    <button onClick={() => copyToClipboard(typeof result.responseData === 'string' ? result.responseData : JSON.stringify(result.responseData, null, 2), 'respBody')} className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all">
+                      <Copy size={10} /> {copyFeedback === 'respBody' ? 'Скопировано!' : 'Копировать'}
                     </button>
                   </div>
                   <pre className="p-3 bg-[#2d2d2d] rounded-lg border border-[rgba(255,255,255,0.08)] font-mono text-xs text-gray-300 whitespace-pre-wrap max-h-[400px] overflow-auto">

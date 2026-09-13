@@ -1,10 +1,14 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { X, Plus } from 'lucide-react';
-import { HttpRequest } from '../types';
+import { HttpRequest, HttpResponse } from '../types';
+import { getMethodColor } from '../utils/methodColors';
 
 interface Tab {
   id: string;
   request: HttpRequest;
+  response: HttpResponse | null;
+  loading: boolean;
+  error: string | null;
 }
 
 interface TabsProps {
@@ -16,6 +20,8 @@ interface TabsProps {
   onTabsReorder?: (tabs: Tab[]) => void;
 }
 
+const MAX_TABS = 10;
+
 export const Tabs: React.FC<TabsProps> = ({
   tabs,
   activeTabId,
@@ -24,73 +30,53 @@ export const Tabs: React.FC<TabsProps> = ({
   onNewTab,
   onTabsReorder,
 }) => {
-  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
-  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
 
-  const METHOD_COLORS: Record<string, string> = {
-    GET: 'text-emerald-400',
-    POST: 'text-amber-400',
-    PUT: 'text-blue-400',
-    PATCH: 'text-purple-400',
-    DELETE: 'text-red-400',
-    HEAD: 'text-gray-400',
-    OPTIONS: 'text-orange-400',
-  };
-
-  const METHOD_BG: Record<string, string> = {
-    GET: 'bg-emerald-500/10',
-    POST: 'bg-amber-500/10',
-    PUT: 'bg-blue-500/10',
-    PATCH: 'bg-purple-500/10',
-    DELETE: 'bg-red-500/10',
-    HEAD: 'bg-gray-500/10',
-    OPTIONS: 'bg-orange-500/10',
-  };
-
-  // Drag and Drop handlers
-  const handleDragStart = (e: React.DragEvent, tabId: string) => {
-    setDraggedTabId(tabId);
+  // ИСПРАВЛЕНИЕ 2.25: Drag-and-drop для переупорядочивания вкладок
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDragIndex(index);
     e.dataTransfer.effectAllowed = 'move';
-    // Делаем элемент полупрозрачным при перетаскивании
-    const el = e.currentTarget as HTMLElement;
-    setTimeout(() => { el.style.opacity = '0.5'; }, 0);
+    e.dataTransfer.setData('text/plain', String(index));
   };
 
-  const handleDragEnd = (e: React.DragEvent) => {
-    const el = e.currentTarget as HTMLElement;
-    el.style.opacity = '1';
-    setDraggedTabId(null);
-    setDragOverTabId(null);
-  };
-
-  const handleDragOver = (e: React.DragEvent, tabId: string) => {
+  const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (draggedTabId !== tabId) {
-      setDragOverTabId(tabId);
-    }
+    setDragOverIndex(index);
   };
 
-  const handleDrop = (e: React.DragEvent, targetTabId: string) => {
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
     e.preventDefault();
-    if (!draggedTabId || draggedTabId === targetTabId || !onTabsReorder) return;
-
-    const draggedIndex = tabs.findIndex(t => t.id === draggedTabId);
-    const targetIndex = tabs.findIndex(t => t.id === targetTabId);
-
-    if (draggedIndex === -1 || targetIndex === -1) return;
+    if (dragIndex === null || dragIndex === dropIndex) {
+      setDragIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
 
     const newTabs = [...tabs];
-    const [draggedTab] = newTabs.splice(draggedIndex, 1);
-    newTabs.splice(targetIndex, 0, draggedTab);
+    const [draggedTab] = newTabs.splice(dragIndex, 1);
+    newTabs.splice(dropIndex, 0, draggedTab);
 
-    onTabsReorder(newTabs);
-    setDraggedTabId(null);
-    setDragOverTabId(null);
+    if (onTabsReorder) {
+      onTabsReorder(newTabs);
+    }
+
+    setDragIndex(null);
+    setDragOverIndex(null);
   };
 
-  // Закрытие по средней кнопке мыши
+  const handleDragEnd = () => {
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
+
+  // ИСПРАВЛЕНИЕ 2.26: Обработка средней кнопки мыши
   const handleMiddleClick = (e: React.MouseEvent, tabId: string) => {
     if (e.button === 1) {
       e.preventDefault();
@@ -98,104 +84,81 @@ export const Tabs: React.FC<TabsProps> = ({
     }
   };
 
+  // ИСПРАВЛЕНИЕ 3.44: preventDefault для Firefox auto-scroll
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 1) {
+      e.preventDefault();
+    }
+  };
+
   return (
-    <div className="h-[34px] flex items-end bg-[#1a1a23] border-b border-[rgba(255,255,255,0.08)] shrink-0">
+    <div className="h-[32px] bg-[#1e1e1e] border-b border-[rgba(255,255,255,0.08)] flex items-end px-2 shrink-0">
       <div 
         ref={tabsContainerRef}
-        className="flex items-end flex-1 overflow-x-auto overflow-y-hidden scrollbar-hide"
-        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        className="flex-1 flex items-end gap-0.5 overflow-x-auto scrollbar-hide"
       >
         {tabs.map((tab, index) => {
-          const isActive = activeTabId === tab.id;
-          const isDragOver = dragOverTabId === tab.id && draggedTabId !== tab.id;
-
+          const isActive = tab.id === activeTabId;
+          const isDragOver = dragOverIndex === index;
+          
           return (
             <div
               key={tab.id}
               draggable
-              onDragStart={(e) => handleDragStart(e, tab.id)}
+              onDragStart={(e) => handleDragStart(e, index)}
+              onDragOver={(e) => handleDragOver(e, index)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, index)}
               onDragEnd={handleDragEnd}
-              onDragOver={(e) => handleDragOver(e, tab.id)}
-              onDrop={(e) => handleDrop(e, tab.id)}
-              onClick={() => onTabClick(tab.id)}
-              onMouseDown={(e) => handleMiddleClick(e, tab.id)}
-              className={`group relative flex items-center gap-1.5 px-3 cursor-pointer select-none transition-all duration-150 ${
-                isDragOver ? 'translate-x-1' : ''
+              onMouseDown={handleMouseDown}
+              onMouseUp={(e) => handleMiddleClick(e, tab.id)}
+              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer transition-all border-t-2 min-w-[120px] max-w-[200px] ${
+                isActive
+                  ? 'bg-[#252525] border-t-indigo-500 text-gray-200'
+                  : isDragOver
+                  ? 'bg-[#2d2d2d] border-t-gray-500 text-gray-400'
+                  : 'bg-[#1e1e1e] border-t-transparent text-gray-500 hover:bg-[#252525] hover:text-gray-300'
               }`}
-              style={{
-                minWidth: '120px',
-                maxWidth: '200px',
-                height: '30px',
-                borderRadius: isActive ? '8px 8px 0 0' : '6px 6px 0 0',
-                background: isActive 
-                  ? 'linear-gradient(to bottom, #252532 0%, #1e1e2e 100%)' 
-                  : 'transparent',
-                border: isActive 
-                  ? '1px solid rgba(255,255,255,0.12)' 
-                  : '1px solid transparent',
-                borderBottom: isActive ? 'none' : '1px solid rgba(255,255,255,0.08)',
-                marginBottom: isActive ? '0' : '4px',
-                marginRight: index < tabs.length - 1 ? '2px' : '0',
-              }}
+              onClick={() => onTabClick(tab.id)}
             >
-              {/* Индикатор перетаскивания */}
-              {isDragOver && (
-                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-indigo-500 rounded-full z-10" />
-              )}
-
-              {/* Метод */}
-              <span 
-                className={`shrink-0 font-bold text-[9px] px-1.5 py-0.5 rounded ${METHOD_COLORS[tab.request.method]} ${METHOD_BG[tab.request.method]}`}
-              >
+              {/* ИСПРАВЛЕНИЕ 3.42: Используем getMethodColor вместо локальных констант */}
+              <span className={`font-bold text-[10px] ${getMethodColor(tab.request.method)}`}>
                 {tab.request.method}
               </span>
-
-              {/* Название */}
-              <span className="flex-1 truncate text-[11px] text-gray-400 group-hover:text-gray-200 transition-colors">
-                {tab.request.name || tab.request.url || 'Новый запрос'}
+              
+              <span className="flex-1 truncate">
+                {tab.request.name || 'Untitled'}
               </span>
 
-              {/* Кнопка закрытия */}
+              {tab.loading && (
+                <div className="w-3 h-3 border-2 border-gray-500 border-t-indigo-500 rounded-full animate-spin"></div>
+              )}
+
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   onTabClose(tab.id);
                 }}
-                onMouseDown={(e) => {
-                  if (e.button === 1) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onTabClose(tab.id);
-                  }
-                }}
-                className={`shrink-0 rounded p-0.5 transition-all ${
-                  isActive 
-                    ? 'opacity-60 hover:opacity-100 hover:bg-red-500/20' 
-                    : 'opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/20'
-                }`}
+                className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-white/10 rounded transition-all"
+                aria-label="Close tab"
               >
-                <X size={10} className="text-gray-400 hover:text-red-400" />
+                <X size={12} />
               </button>
-
-              {/* Индикатор несохранённых изменений (опционально) */}
-              {!isActive && (
-                <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-[2px] bg-[rgba(255,255,255,0.08)] rounded-t-full" />
-              )}
             </div>
           );
         })}
-      </div>
 
-      {/* Кнопка новой вкладки */}
-      {tabs.length < 10 && (
-        <button
-          onClick={onNewTab}
-          className="flex items-center justify-center h-[30px] w-[30px] mb-[4px] ml-1 rounded-md hover:bg-white/5 transition-all group shrink-0"
-          title="Новая вкладка (Ctrl+T)"
-        >
-          <Plus size={14} className="text-gray-500 group-hover:text-indigo-400 transition-colors" />
-        </button>
-      )}
+        {/* Кнопка новой вкладки */}
+        {tabs.length < MAX_TABS && (
+          <button
+            onClick={onNewTab}
+            className="flex items-center justify-center w-7 h-7 ml-1 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded transition-all"
+            aria-label="New tab"
+          >
+            <Plus size={14} />
+          </button>
+        )}
+      </div>
     </div>
   );
 };

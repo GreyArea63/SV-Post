@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { X, Plus, Trash2, Upload, Download, Copy, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { X, Plus, Trash2, Upload, Download, Copy, AlertCircle, Save } from 'lucide-react';
 import { Environment, KeyValuePair } from '../types';
 import { generateId } from '../utils/helpers';
 
@@ -27,60 +27,90 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
   const [globals, setGlobals] = useState<KeyValuePair[]>(globalVariables);
   const [selectedEnvId, setSelectedEnvId] = useState<string | null>(environments[0]?.id || null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  
+  const isInitialMount = useRef(true);
+  const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
     setEnvList(environments);
+    setHasUnsavedChanges(false);
   }, [environments]);
 
   useEffect(() => {
     setGlobals(globalVariables);
   }, [globalVariables]);
 
+  // ИСПРАВЛЕНИЕ 3.45: clearTimeout для уведомлений
   useEffect(() => {
     if (notification) {
-      const timer = setTimeout(() => setNotification(null), 3000);
-      return () => clearTimeout(timer);
+      if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+      notificationTimerRef.current = setTimeout(() => setNotification(null), 3000);
     }
+    return () => {
+      if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    };
   }, [notification]);
 
   const showNotification = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
   };
 
+  // ИСПРАВЛЕНИЕ 3.46: onSave async и await перед тостом
   const handleSave = useCallback(async () => {
-    await onSave(envList, globals);
-    showNotification('success', 'Окружения сохранены');
+    try {
+      await onSave(envList, globals);
+      setHasUnsavedChanges(false);
+      showNotification('success', 'Окружения сохранены');
+    } catch (err: any) {
+      showNotification('error', 'Ошибка сохранения: ' + (err.message || 'неизвестно'));
+    }
   }, [envList, globals, onSave]);
 
-  const handleCreateEnv = () => {
+  const handleCreateEnv = useCallback(async () => {
     const newEnv: Environment = {
       id: generateId(),
       name: `Environment ${envList.length + 1}`,
       variables: [],
     };
-    setEnvList([...envList, newEnv]);
+    const newEnvList = [...envList, newEnv];
+    setEnvList(newEnvList);
     setSelectedEnvId(newEnv.id);
-  };
+    setHasUnsavedChanges(true);
+    await onSave(newEnvList, globals);
+    showNotification('success', 'Окружение создано');
+  }, [envList, globals, onSave]);
 
-  const handleDeleteEnv = (id: string) => {
+  const handleDeleteEnv = useCallback(async (id: string) => {
     const newEnvs = envList.filter(e => e.id !== id);
     setEnvList(newEnvs);
     if (selectedEnvId === id) {
       setSelectedEnvId(newEnvs[0]?.id || null);
     }
-  };
+    setHasUnsavedChanges(true);
+    await onSave(newEnvs, globals);
+    showNotification('success', 'Окружение удалено');
+  }, [envList, selectedEnvId, globals, onSave]);
 
-  const handleDuplicateEnv = (env: Environment) => {
+  const handleDuplicateEnv = useCallback(async (env: Environment) => {
     const newEnv: Environment = {
       ...env,
       id: generateId(),
       name: `${env.name} (copy)`,
     };
-    setEnvList([...envList, newEnv]);
+    const newEnvList = [...envList, newEnv];
+    setEnvList(newEnvList);
     setSelectedEnvId(newEnv.id);
-  };
+    setHasUnsavedChanges(true);
+    await onSave(newEnvList, globals);
+    showNotification('success', 'Окружение дублировано');
+  }, [envList, globals, onSave]);
 
-  const updateEnvVariable = (envId: string, varId: string, key: keyof KeyValuePair, value: any) => {
+  const updateEnvVariable = useCallback((envId: string, varId: string, key: keyof KeyValuePair, value: any) => {
     setEnvList(envList.map(env => {
       if (env.id !== envId) return env;
       return {
@@ -88,37 +118,43 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
         variables: env.variables.map(v => v.id === varId ? { ...v, [key]: value } : v),
       };
     }));
-  };
+    setHasUnsavedChanges(true);
+  }, [envList]);
 
-  const addEnvVariable = (envId: string) => {
+  const addEnvVariable = useCallback((envId: string) => {
     const newVar: KeyValuePair = { id: generateId(), key: '', value: '', enabled: true };
     setEnvList(envList.map(env => {
       if (env.id !== envId) return env;
       return { ...env, variables: [...env.variables, newVar] };
     }));
-  };
+    setHasUnsavedChanges(true);
+  }, [envList]);
 
-  const removeEnvVariable = (envId: string, varId: string) => {
+  const removeEnvVariable = useCallback((envId: string, varId: string) => {
     setEnvList(envList.map(env => {
       if (env.id !== envId) return env;
       return { ...env, variables: env.variables.filter(v => v.id !== varId) };
     }));
-  };
+    setHasUnsavedChanges(true);
+  }, [envList]);
 
-  const updateGlobalVariable = (varId: string, key: keyof KeyValuePair, value: any) => {
+  const updateGlobalVariable = useCallback((varId: string, key: keyof KeyValuePair, value: any) => {
     setGlobals(globals.map(v => v.id === varId ? { ...v, [key]: value } : v));
-  };
+    setHasUnsavedChanges(true);
+  }, [globals]);
 
-  const addGlobalVariable = () => {
+  const addGlobalVariable = useCallback(() => {
     const newVar: KeyValuePair = { id: generateId(), key: '', value: '', enabled: true };
     setGlobals([...globals, newVar]);
-  };
+    setHasUnsavedChanges(true);
+  }, [globals]);
 
-  const removeGlobalVariable = (varId: string) => {
+  const removeGlobalVariable = useCallback((varId: string) => {
     setGlobals(globals.filter(v => v.id !== varId));
-  };
+    setHasUnsavedChanges(true);
+  }, [globals]);
 
-  const handleImportClick = () => {
+  const handleImportClick = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
@@ -140,12 +176,24 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
       }
     };
     input.click();
-  };
+  }, [onImport]);
 
-  const handleExportClick = () => {
+  const handleExportClick = useCallback(() => {
     onExport(envList, globals);
     showNotification('success', 'Окружения экспортированы');
-  };
+  }, [envList, globals, onExport]);
+
+  const handleClose = useCallback(() => {
+    if (hasUnsavedChanges) {
+      if (window.confirm('Есть несохранённые изменения. Сохранить перед закрытием?')) {
+        handleSave().then(() => onClose());
+      } else {
+        onClose();
+      }
+    } else {
+      onClose();
+    }
+  }, [hasUnsavedChanges, handleSave, onClose]);
 
   const selectedEnv = envList.find(e => e.id === selectedEnvId);
 
@@ -154,7 +202,7 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
       <div className="bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-[rgba(255,255,255,0.08)]">
           <h2 className="text-xl font-bold text-gray-200">Environment Manager</h2>
-          <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-lg transition-all" aria-label="Close">
+          <button onClick={handleClose} className="p-2 hover:bg-white/5 rounded-lg transition-all" aria-label="Close">
             <X size={20} className="text-gray-400" />
           </button>
         </div>
@@ -220,6 +268,7 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
                           setEnvList(envList.map(env =>
                             env.id === selectedEnv.id ? { ...env, name: e.target.value } : env
                           ));
+                          setHasUnsavedChanges(true);
                         }}
                         className="px-3 py-2 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg text-sm text-gray-300 focus:outline-none focus:border-gray-500"
                       />
@@ -358,16 +407,23 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
               Export
             </button>
           </div>
-          <div className="flex gap-3">
+          <div className="flex gap-3 items-center">
+            {hasUnsavedChanges && (
+              <span className="text-xs text-amber-400 flex items-center gap-1">
+                <Save size={12} />
+                Unsaved changes
+              </span>
+            )}
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2 bg-[#2d2d2d] hover:bg-[#363636] text-gray-300 rounded-lg text-sm font-medium transition-all"
             >
               Cancel
             </button>
             <button
               onClick={handleSave}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-all"
+              disabled={!hasUnsavedChanges}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-all"
             >
               Save Changes
             </button>

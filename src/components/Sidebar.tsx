@@ -1,7 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { Folder, Clock, Plus, ChevronRight, ChevronDown, Play, Trash2, Search } from 'lucide-react';
 import { Collection, HistoryItem } from '../types';
-import { formatTime } from '../utils/helpers';
+import { formatDate } from '../utils/helpers';
 import { getMethodColor } from '../utils/methodColors';
 
 interface SidebarProps {
@@ -39,16 +39,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const lowerQuery = searchQuery.toLowerCase();
 
+  // ИСПРАВЛЕНИЕ 2.24: Фильтрация коллекций с учётом вложенных запросов
   const filteredCollections = useMemo(() => {
     if (!lowerQuery) return collections;
-    return collections.filter(collection =>
-      collection.name.toLowerCase().includes(lowerQuery) ||
-      collection.requests.some(r => 
-        r.name.toLowerCase().includes(lowerQuery) ||
-        r.url.toLowerCase().includes(lowerQuery)
-      )
-    );
+    
+    return collections.map(collection => {
+      // Фильтруем запросы внутри коллекции по поиску
+      const filteredRequests = collection.requests.filter(request =>
+        request.name.toLowerCase().includes(lowerQuery) ||
+        request.url.toLowerCase().includes(lowerQuery) ||
+        request.method.toLowerCase().includes(lowerQuery)
+      );
+      
+      // Показываем коллекцию, если её имя совпадает ИЛИ есть совпадающие запросы
+      if (collection.name.toLowerCase().includes(lowerQuery) || filteredRequests.length > 0) {
+        return {
+          ...collection,
+          requests: filteredRequests.length > 0 ? filteredRequests : collection.requests,
+        };
+      }
+      return null;
+    }).filter(Boolean) as Collection[];
   }, [collections, lowerQuery]);
+
+  // ИСПРАВЛЕНИЕ 2.24: Авто-раскрытие при поиске
+  const isExpanded = (collectionId: string) => {
+    if (searchQuery) return true;
+    return expandedCollections.has(collectionId);
+  };
 
   const filteredHistory = useMemo(() => {
     if (!lowerQuery) return history;
@@ -58,12 +76,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       item.request.method.toLowerCase().includes(lowerQuery)
     );
   }, [history, lowerQuery]);
-
-  // Авто-раскрытие при поиске
-  const isExpanded = (collectionId: string) => {
-    if (searchQuery) return true;
-    return expandedCollections.has(collectionId);
-  };
 
   return (
     <div className="w-72 bg-[#1e1e1e] border-r border-[rgba(255,255,255,0.08)] flex flex-col h-full">
@@ -188,7 +200,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <div className="text-gray-300 truncate font-medium">{item.request.name}</div>
                     <div className="text-gray-500 truncate text-[10px]">{item.request.url}</div>
                     <div className="text-gray-600 text-[10px] mt-0.5">
-                      {formatTime(item.timestamp)} • {item.response?.status || '---'}
+                      {/* ИСПРАВЛЕНИЕ 2.23: Используем formatDate вместо formatTime */}
+                      {formatDate(item.timestamp)} • {item.response?.status || '---'}
                     </div>
                   </div>
                   <button

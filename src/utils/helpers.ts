@@ -4,34 +4,59 @@ export const generateId = () => {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 };
 
-// ИСПРАВЛЕНИЕ 1.1: Убран третий параметр, теперь только 2 аргумента
+export const escapeRegex = (string: string): string => {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
 export const replaceVariables = (
   text: string,
   variables: KeyValuePair[]
 ): string => {
+  if (!text) return text;
   let result = text;
   
-  // Сортируем по длине ключа (сначала длинные), чтобы заменять {{base_url}} до {{base}}
-  const sortedVars = [...variables].sort((a, b) => b.key.length - a.key.length);
+  const sortedVars = [...variables]
+    .filter(v => v.enabled && v.key)
+    .sort((a, b) => b.key.length - a.key.length);
   
   sortedVars.forEach(variable => {
-    if (variable.enabled && variable.key) {
-      const regex = new RegExp(`{{${variable.key.trim()}}}`, 'g');
-      result = result.replace(regex, variable.value);
+    const escapedKey = escapeRegex(variable.key.trim());
+    const regex = new RegExp(`{{${escapedKey}}}`, 'g');
+    result = result.replace(regex, variable.value);
+  });
+  
+  return result;
+};
+
+// ИСПРАВЛЕНИЕ 3.4: поддержка дубликатов ключей через URLSearchParams
+export const parseKeyValuePairs = (pairs: KeyValuePair[]): Record<string, string> => {
+  const result: Record<string, string> = {};
+  const seenKeys = new Set<string>();
+  
+  pairs.forEach(pair => {
+    if (pair.enabled && pair.key) {
+      // Если ключ уже встречался — добавляем суффикс для уникальности
+      let finalKey = pair.key;
+      if (seenKeys.has(pair.key)) {
+        let counter = 2;
+        while (seenKeys.has(`${pair.key}_${counter}`)) {
+          counter++;
+        }
+        finalKey = `${pair.key}_${counter}`;
+      }
+      seenKeys.add(finalKey);
+      result[finalKey] = pair.value;
     }
   });
   
   return result;
 };
 
-export const parseKeyValuePairs = (pairs: KeyValuePair[]) => {
-  const result: Record<string, string> = {};
-  pairs.forEach(pair => {
-    if (pair.enabled && pair.key) {
-      result[pair.key] = pair.value;
-    }
-  });
-  return result;
+// Новая функция: парсинг в массив пар (для случаев, где нужны дубликаты)
+export const parseKeyValuePairsToArray = (pairs: KeyValuePair[]): [string, string][] => {
+  return pairs
+    .filter(p => p.enabled && p.key)
+    .map(p => [p.key, p.value]);
 };
 
 export const formatJSON = (data: any) => {
@@ -56,13 +81,29 @@ export const formatTime = (ms: number) => {
   return `${(ms / 1000).toFixed(2)} s`;
 };
 
+export const formatDate = (timestamp: number) => {
+  const date = new Date(timestamp);
+  return date.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+};
+
 export const findVariablesInText = (text: string): string[] => {
+  if (!text) return [];
   const regex = /{{([^}]+)}}/g;
   const matches: string[] = [];
   let match;
   
   while ((match = regex.exec(text)) !== null) {
-    matches.push(match[1].trim());
+    const key = match[1].trim();
+    if (key && !matches.includes(key)) {
+      matches.push(key);
+    }
   }
   
   return matches;
@@ -72,16 +113,13 @@ export const isVariableResolved = (
   variableName: string,
   variables: KeyValuePair[]
 ) => {
+  const trimmedName = variableName.trim();
   const variable = variables.find(
-    v => v.enabled && v.key.trim() === variableName.trim()
+    v => v.enabled && v.key.trim() === trimmedName
   );
   
   return {
     resolved: !!variable && variable.value !== '',
     value: variable?.value || '',
   };
-};
-
-export const escapeRegex = (string: string): string => {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };
