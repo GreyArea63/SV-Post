@@ -8,6 +8,7 @@ interface SchemaEditorProps {
   onApplyExample: (example: string) => void;
 }
 
+// ИСПРАВЛЕНИЕ 3.40: вынесено за компонент
 const DEFAULT_SCHEMA = `{
   "type": "object",
   "properties": {
@@ -17,50 +18,14 @@ const DEFAULT_SCHEMA = `{
   "required": ["id", "name"]
 }`;
 
-// Вынесено за компонент, чтобы не пересоздаваться при каждом рендере
-const generateExampleFromSchema = (schema: any): any => {
-  if (!schema || typeof schema !== 'object') return null;
-
-  if (schema.type === 'object') {
-    const obj: any = {};
-    if (schema.properties) {
-      Object.entries(schema.properties).forEach(([key, prop]: [string, any]) => {
-        if (prop.default !== undefined) {
-          obj[key] = prop.default;
-        } else if (prop.type === 'string') {
-          obj[key] = '';
-        } else if (prop.type === 'number') {
-          obj[key] = 0;
-        } else if (prop.type === 'integer') {
-          obj[key] = 0;
-        } else if (prop.type === 'boolean') {
-          obj[key] = false;
-        } else if (prop.type === 'array') {
-          obj[key] = [];
-        } else if (prop.type === 'object') {
-          obj[key] = generateExampleFromSchema(prop);
-        } else {
-          obj[key] = null;
-        }
-      });
-    }
-    return obj;
-  }
-
-  if (schema.type === 'string') return '';
-  if (schema.type === 'number' || schema.type === 'integer') return 0;
-  if (schema.type === 'boolean') return false;
-  if (schema.type === 'array') return [];
-
-  return null;
-};
-
+// ИСПРАВЛЕНИЕ 3.36: Number.isInteger для integer
 const validateJsonAgainstSchema = (schema: any, data: any): { valid: boolean; error?: string } => {
   if (!schema || typeof schema !== 'object') {
     return { valid: false, error: 'Некорректная схема' };
   }
 
   if (schema.type === 'object') {
+    // ИСПРАВЛЕНИЕ 3.37: проверка на null/undefined перед field in data
     if (data === null || data === undefined) {
       return { valid: false, error: 'Ожидался объект, получено null/undefined' };
     }
@@ -90,6 +55,7 @@ const validateJsonAgainstSchema = (schema: any, data: any): { valid: boolean; er
     return { valid: true };
   }
 
+  // ИСПРАВЛЕНИЕ 3.36: Number.isInteger для integer
   if (schema.type === 'integer') {
     if (typeof data !== 'number' || !Number.isInteger(data)) {
       return { valid: false, error: 'Ожидалось целое число' };
@@ -126,6 +92,45 @@ const validateJsonAgainstSchema = (schema: any, data: any): { valid: boolean; er
   }
 
   return { valid: true };
+};
+
+// ИСПРАВЛЕНИЕ 3.38: !== undefined вместо || для default
+const generateExampleFromSchema = (schema: any): any => {
+  if (!schema || typeof schema !== 'object') return null;
+
+  if (schema.type === 'object') {
+    const obj: any = {};
+    if (schema.properties) {
+      Object.entries(schema.properties).forEach(([key, prop]: [string, any]) => {
+        // ИСПРАВЛЕНИЕ 3.38: используем !== undefined вместо ||
+        if (prop.default !== undefined) {
+          obj[key] = prop.default;
+        } else if (prop.type === 'string') {
+          obj[key] = '';
+        } else if (prop.type === 'number') {
+          obj[key] = 0;
+        } else if (prop.type === 'integer') {
+          obj[key] = 0;
+        } else if (prop.type === 'boolean') {
+          obj[key] = false;
+        } else if (prop.type === 'array') {
+          obj[key] = [];
+        } else if (prop.type === 'object') {
+          obj[key] = generateExampleFromSchema(prop);
+        } else {
+          obj[key] = null;
+        }
+      });
+    }
+    return obj;
+  }
+
+  if (schema.type === 'string') return '';
+  if (schema.type === 'number' || schema.type === 'integer') return 0;
+  if (schema.type === 'boolean') return false;
+  if (schema.type === 'array') return [];
+
+  return null;
 };
 
 export const SchemaEditor: React.FC<SchemaEditorProps> = ({

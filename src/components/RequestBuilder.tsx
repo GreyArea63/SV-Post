@@ -6,18 +6,21 @@ import { getMethodColor } from '../utils/methodColors';
 import { JsonEditor } from './JsonEditor';
 import { SchemaEditor } from './SchemaEditor';
 import { KeyValueEditor } from './KeyValueEditor';
+import { VariableTooltip } from './VariableTooltip';
 
 interface RequestBuilderProps {
   request: HttpRequest;
   onChange: (request: HttpRequest) => void;
   onSend: () => void;
   onError: (message: string) => void;
+  onSaveRequest: () => void;
   loading: boolean;
   environments: Environment[];
   activeEnvId: string | null;
   globalVariables: KeyValuePair[];
   collections: Collection[];
   onMethodChange: (newMethod: string) => void;
+  onUpdateVariable?: (key: string, value: string, scope: 'global' | 'env') => void;
 }
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -45,17 +48,20 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   onChange,
   onSend,
   onError,
+  onSaveRequest,
   loading,
   environments,
   activeEnvId,
   globalVariables,
   collections,
   onMethodChange,
+  onUpdateVariable,
 }) => {
   const [activeTab, setActiveTab] = useState<'docs' | 'params' | 'authorization' | 'headers' | 'body' | 'scripts' | 'settings'>('body');
   const [showSchemaEditor, setShowSchemaEditor] = useState(false);
   const [jsonFormat, setJsonFormat] = useState<'JSON' | 'XML' | 'Text'>('JSON');
   const [bodySchema, setBodySchema] = useState<string>('');
+  const [selectedVariable, setSelectedVariable] = useState<string | null>(null);
 
   const activeEnv = environments.find(e => e.id === activeEnvId);
   const envVariables = activeEnv?.variables || [];
@@ -85,6 +91,16 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
     }));
   }, [usedVariables, allVariables]);
 
+  const handleVariableClick = useCallback((varName: string) => {
+    setSelectedVariable(varName);
+  }, []);
+
+  const handleVariableUpdate = useCallback((key: string, value: string, scope: 'global' | 'env') => {
+    if (onUpdateVariable) {
+      onUpdateVariable(key, value, scope);
+    }
+  }, [onUpdateVariable]);
+
   const updateKeyValuePair = useCallback(<K extends keyof KeyValuePair>(
     field: 'headers' | 'queryParams',
     id: string,
@@ -113,7 +129,35 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   }, [request, onChange]);
 
   const updateBody = useCallback((body: RequestBody) => {
-    onChange({ ...request, body });
+    const newBody = { ...request.body, ...body };
+    
+    if ((body.type === 'form-data' || body.type === 'x-www-form-urlencoded') && 
+        !body.form && request.body.content) {
+      try {
+        const parsed = JSON.parse(request.body.content);
+        if (typeof parsed === 'object' && parsed !== null) {
+          newBody.form = Object.entries(parsed).map(([key, value]) => ({
+            id: Math.random().toString(36).substring(2) + Date.now().toString(36),
+            key,
+            value: String(value),
+            enabled: true,
+          }));
+        }
+      } catch {
+        // Если не JSON — оставляем form пустым
+      }
+    }
+    
+    if ((body.type === 'raw' || body.type === 'json' || body.type === 'graphql') && 
+        request.body.form && request.body.form.length > 0 && !body.content) {
+      const obj: Record<string, string> = {};
+      request.body.form.forEach(f => {
+        if (f.enabled && f.key) obj[f.key] = f.value;
+      });
+      newBody.content = JSON.stringify(obj, null, 2);
+    }
+    
+    onChange({ ...request, body: newBody });
   }, [request, onChange]);
 
   const handleBeautify = useCallback(() => {
@@ -141,16 +185,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   }, [request, onChange]);
 
   const handleAuthTypeChange = useCallback((newType: RequestAuth['type']) => {
-    updateAuth({
-      type: newType,
-      token: '',
-      username: '',
-      password: '',
-      apiKey: '',
-      apiValue: '',
-      addTo: 'header',
-      accessToken: '',
-    });
+    updateAuth({ type: newType });
   }, [updateAuth]);
 
   const currentCollection = useMemo(() => 
@@ -182,7 +217,12 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg text-sm transition-all" aria-label="Save">
+          <button 
+            onClick={onSaveRequest}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg text-sm transition-all" 
+            aria-label="Save request to collection"
+            title="Сохранить запрос в коллекцию"
+          >
             <Save size={14} />
             <span>Save</span>
           </button>
@@ -225,23 +265,24 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
         </button>
       </div>
 
-      {/* Variable Status Bar */}
+      {/* Variable Status Bar — КЛИКАБЕЛЬНЫЕ ПЕРЕМЕННЫЕ */}
       {variableStatus.length > 0 && (
         <div className="h-[24px] px-4 bg-[#1e1e1e] border-b border-[rgba(255,255,255,0.08)] flex items-center gap-2 overflow-x-auto shrink-0">
           <span className="text-[9px] text-gray-500 whitespace-nowrap">Переменные:</span>
           {variableStatus.map(v => (
-            <span
+            <button
               key={v.name}
-              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] whitespace-nowrap ${
+              onClick={() => handleVariableClick(v.name)}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] whitespace-nowrap transition-all hover:scale-105 ${
                 v.resolved
-                  ? 'bg-emerald-500/10 text-emerald-400'
-                  : 'bg-red-500/10 text-red-400'
+                  ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                  : 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
               }`}
-              title={v.resolved ? `Значение: ${v.value}` : 'Не определена'}
+              title={v.resolved ? `Значение: ${v.value} (клик для редактирования)` : 'Не определена (клик для добавления)'}
             >
               {v.resolved ? <CheckCircle size={8} /> : <AlertCircle size={8} />}
               {`{{${v.name}}}`}
-            </span>
+            </button>
           ))}
         </div>
       )}
@@ -451,7 +492,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                       type="radio"
                       name="body-type"
                       checked={request.body.type === type.value}
-                      onChange={() => updateBody({ ...request.body, type: type.value })}
+                      onChange={() => updateBody({ type: type.value } as RequestBody)}
                       className="sr-only"
                     />
                     <div className={`w-3 h-3 rounded-full border-2 transition-all ${
@@ -550,6 +591,18 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
             updateBody({ ...request.body, content: ex }); 
             setShowSchemaEditor(false); 
           }}
+        />
+      )}
+
+      {/* Variable Tooltip Modal */}
+      {selectedVariable && (
+        <VariableTooltip
+          variableName={selectedVariable}
+          variable={variableStatus.find(v => v.name === selectedVariable) || { resolved: false, value: '' }}
+          globalVariables={globalVariables}
+          envVariables={envVariables}
+          onUpdate={handleVariableUpdate}
+          onClose={() => setSelectedVariable(null)}
         />
       )}
     </div>

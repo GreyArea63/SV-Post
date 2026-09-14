@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Clock, HardDrive, CheckCircle, AlertCircle, XCircle, Download, Eye, Copy } from 'lucide-react';
 import { HttpResponse } from '../types';
 import { formatJSON, formatSize, formatTime } from '../utils/helpers';
+import { Clock, HardDrive, CheckCircle, AlertCircle, XCircle, Download, Copy, Send } from 'lucide-react';
 
 interface ResponseViewerProps {
   response: HttpResponse | null;
@@ -123,30 +123,21 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({ response, loadin
   }
 
   if (!response) {
-    return (
-      <div className="flex flex-col h-full bg-[#1e1e1e]">
-        <HeaderBar />
-        <div className="flex-1 flex flex-col items-center justify-center p-4">
-          <div className="text-center">
-            <div className="space-y-4">
-              <div className="flex items-center justify-center gap-2 text-gray-400 text-sm cursor-pointer hover:text-gray-200 transition-colors group">
-                <div className="w-8 h-8 rounded-lg bg-[#2d2d2d] flex items-center justify-center group-hover:bg-[#3d3d3d] transition-colors">
-                  <Clock size={16} className="text-gray-500 group-hover:text-gray-300" />
-                </div>
-                <span>Send + Get a successful response</span>
-              </div>
-              <div className="flex items-center justify-center gap-2 text-gray-400 text-sm cursor-pointer hover:text-gray-200 transition-colors group">
-                <div className="w-8 h-8 rounded-lg bg-[#2d2d2d] flex items-center justify-center group-hover:bg-[#3d3d3d] transition-colors">
-                  <Eye size={16} className="text-gray-500 group-hover:text-gray-300" />
-                </div>
-                <span>Send + Visualize response</span>
-              </div>
-            </div>
+  return (
+    <div className="flex flex-col h-full bg-[#1e1e1e]">
+      <HeaderBar />
+      <div className="flex-1 flex items-center justify-center p-4">
+        <div className="text-center">
+          <div className="w-16 h-16 rounded-2xl bg-[#2d2d2d] flex items-center justify-center mx-auto mb-4">
+            <Send size={24} className="text-gray-500" />
           </div>
+          <div className="text-gray-400 text-sm font-medium mb-1">Нет ответа</div>
+          <div className="text-gray-600 text-xs">Отправьте запрос для получения ответа</div>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   return (
     <div className="flex flex-col h-full bg-[#1e1e1e]">

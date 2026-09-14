@@ -1,6 +1,11 @@
 import { KeyValuePair } from '../types';
 
-export const generateId = () => {
+// ИСПРАВЛЕНИЕ 3.1: используем crypto.randomUUID() вместо Math.random()
+export const generateId = (): string => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Fallback для старых браузеров
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 };
 
@@ -28,14 +33,12 @@ export const replaceVariables = (
   return result;
 };
 
-// ИСПРАВЛЕНИЕ 3.4: поддержка дубликатов ключей через URLSearchParams
 export const parseKeyValuePairs = (pairs: KeyValuePair[]): Record<string, string> => {
   const result: Record<string, string> = {};
   const seenKeys = new Set<string>();
   
   pairs.forEach(pair => {
     if (pair.enabled && pair.key) {
-      // Если ключ уже встречался — добавляем суффикс для уникальности
       let finalKey = pair.key;
       if (seenKeys.has(pair.key)) {
         let counter = 2;
@@ -52,7 +55,6 @@ export const parseKeyValuePairs = (pairs: KeyValuePair[]): Record<string, string
   return result;
 };
 
-// Новая функция: парсинг в массив пар (для случаев, где нужны дубликаты)
 export const parseKeyValuePairsToArray = (pairs: KeyValuePair[]): [string, string][] => {
   return pairs
     .filter(p => p.enabled && p.key)
