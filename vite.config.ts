@@ -15,13 +15,11 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-
   server: {
     port: 3000,
     strictPort: false,
     host: 'localhost',
   },
-
   build: {
     outDir: 'dist',
     emptyOutDir: true,
@@ -36,7 +34,6 @@ export default defineConfig({
       },
     },
   },
-
   optimizeDeps: {
     exclude: ['lucide-react'],
   },

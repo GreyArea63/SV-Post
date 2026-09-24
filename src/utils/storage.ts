@@ -181,7 +181,6 @@ const ensureMigrated = async (): Promise<void> => {
  */
 const migrateFromLocalStorage = async (): Promise<void> => {
   const db = await getDB();
-
   try {
     const cols = localStorage.getItem('collections');
     if (cols) {

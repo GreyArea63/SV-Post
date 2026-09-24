@@ -3,7 +3,11 @@
     "target": "ES2020",
     "module": "CommonJS",
     "moduleResolution": "node",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "outDir": "../dist-electron",
     "rootDir": ".",
     "strict": false,
@@ -14,8 +18,16 @@
     "resolveJsonModule": true,
     "declaration": false,
     "sourceMap": false,
-    "types": ["node", "electron"]
+    "types": [
+      "node",
+      "electron"
+    ]
   },
-  "include": ["**/*.ts"],
-  "exclude": ["node_modules", "../dist-electron"]
+  "include": [
+    "**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "../dist-electron"
+  ]
 }

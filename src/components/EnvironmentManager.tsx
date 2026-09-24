@@ -387,8 +387,8 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
           <button
             onClick={() => setActiveTab('environments')}
             className={`flex-1 px-4 py-3 text-sm font-medium transition-all ${activeTab === 'environments'
-                ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
-                : 'text-gray-500 hover:text-gray-300'
+              ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
+              : 'text-gray-500 hover:text-gray-300'
               }`}
           >
             Environments
@@ -396,8 +396,8 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
           <button
             onClick={() => setActiveTab('globals')}
             className={`flex-1 px-4 py-3 text-sm font-medium transition-all ${activeTab === 'globals'
-                ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
-                : 'text-gray-500 hover:text-gray-300'
+              ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
+              : 'text-gray-500 hover:text-gray-300'
               }`}
           >
             Global Variables
@@ -420,8 +420,8 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
                     key={env.id}
                     onClick={() => setSelectedEnvId(env.id)}
                     className={`w-full flex items-center gap-2 px-3 py-2 text-xs rounded-lg transition-all ${selectedEnvId === env.id
-                        ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
-                        : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+                      ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
+                      : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
                       }`}
                   >
                     <span className="flex-1 text-left truncate">{env.name}</span>

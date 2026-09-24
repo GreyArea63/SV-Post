@@ -108,7 +108,6 @@ export interface PostmanCollectionFile {
   info: PostmanCollectionInfo;
   item: any[];
 }
-
 // ============ Script Execution Types ============
 export interface TestResult {
   name: string;

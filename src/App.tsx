@@ -496,7 +496,6 @@ function App() {
       ...globalVariables.filter(g => g.enabled),
       ...envVariables.filter(e => e.enabled),
     ];
-
     return {
       ...request,
       url: replaceVariables(request.url, allVariables),
@@ -601,7 +600,6 @@ function App() {
 
   const handleRunPreRequest = useCallback(async () => {
     if (!activeTab || !activeTab.request.scripts?.preRequest) return null;
-
     const result = await executeScript('preRequest', activeTab.request.scripts.preRequest, activeTab.request, null);
     if (result) {
       setLastScriptResult(result);
@@ -700,7 +698,6 @@ function App() {
       const baseUrl = url.split('?')[0];
       url = queryString ? `${baseUrl}?${queryString}` : baseUrl;
       const startTime = Date.now();
-
       const config: any = {
         method: processedRequest.method.toLowerCase(),
         url,
