@@ -100,55 +100,50 @@ const hasUnsavedChanges = (tab: Tab): boolean => {
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Дедупликация окружений по имени (регистронезависимо).
- * Если incoming содержит окружение с именем, которое уже есть — оно ЗАМЕНЯЕТ существующее
- * (сохраняя оригинальный id), а не добавляется вторым.
+ * Удаляет из объекта headers все ключи, совпадающие с именем (регистронезависимо).
+ * Нужно, чтобы не было двух заголовков Authorization в разном регистре.
  */
+const removeHeaderCaseInsensitive = (headers: Record<string, string>, name: string): void => {
+  const lower = name.toLowerCase();
+  Object.keys(headers).forEach(key => {
+    if (key.toLowerCase() === lower) {
+      delete headers[key];
+    }
+  });
+};
+
 const mergeEnvironments = (
   existing: Environment[],
   incoming: Environment[]
 ): Environment[] => {
   const map = new Map<string, Environment>();
-
-  // Сначала существующие
   existing.forEach(e => {
     map.set(e.name.trim().toLowerCase(), e);
   });
-
-  // Затем входящие — перезаписывают по имени
   incoming.forEach(e => {
     const key = e.name.trim().toLowerCase();
     const prev = map.get(key);
     if (prev) {
-      // Заменяем переменные, сохраняя оригинальный id
       map.set(key, { ...prev, name: e.name, variables: e.variables });
     } else {
       map.set(key, { ...e, id: generateId() });
     }
   });
-
   return Array.from(map.values());
 };
 
-/**
- * Дедупликация коллекций по имени.
- * Запросы внутри мерджатся по id (чтобы не плодить дубли).
- */
 const mergeCollections = (
   existing: Collection[],
   incoming: Collection[]
 ): Collection[] => {
   const map = new Map<string, Collection>();
-
   existing.forEach(c => {
     map.set(c.name.trim().toLowerCase(), c);
   });
-
   incoming.forEach(c => {
     const key = c.name.trim().toLowerCase();
     const prev = map.get(key);
     if (prev) {
-      // Мерджим запросы: по id обновляем, новых добавляем
       const requestMap = new Map<string, HttpRequest>();
       prev.requests.forEach(r => requestMap.set(r.id, r));
       c.requests.forEach(r => {
@@ -163,7 +158,6 @@ const mergeCollections = (
       map.set(key, { ...c, id: generateId() });
     }
   });
-
   return Array.from(map.values());
 };
 
@@ -492,6 +486,9 @@ function App() {
     return environments.find(env => env.id === activeEnvId) || null;
   }, [environments, activeEnvId]);
 
+  /**
+   * ИСПРАВЛЕНО: теперь обрабатывается auth.token, username, password, apiKey, apiValue, accessToken.
+   */
   const processRequest = useCallback((request: HttpRequest): HttpRequest => {
     const env = getActiveEnvironment();
     const envVariables = env?.variables || [];
@@ -499,12 +496,26 @@ function App() {
       ...globalVariables.filter(g => g.enabled),
       ...envVariables.filter(e => e.enabled),
     ];
+
     return {
       ...request,
       url: replaceVariables(request.url, allVariables),
       headers: request.headers.map(h => ({ ...h, value: replaceVariables(h.value, allVariables) })),
       queryParams: request.queryParams.map(p => ({ ...p, value: replaceVariables(p.value, allVariables) })),
       body: { ...request.body, content: replaceVariables(request.body.content, allVariables) },
+      // ✅ КРИТИЧНО: заменяем переменные в auth
+      auth: request.auth
+        ? {
+          ...request.auth,
+          token: request.auth.token ? replaceVariables(request.auth.token, allVariables) : request.auth.token,
+          username: request.auth.username ? replaceVariables(request.auth.username, allVariables) : request.auth.username,
+          password: request.auth.password ? replaceVariables(request.auth.password, allVariables) : request.auth.password,
+          apiKey: request.auth.apiKey ? replaceVariables(request.auth.apiKey, allVariables) : request.auth.apiKey,
+          apiValue: request.auth.apiValue ? replaceVariables(request.auth.apiValue, allVariables) : request.auth.apiValue,
+          accessToken: request.auth.accessToken ? replaceVariables(request.auth.accessToken, allVariables) : request.auth.accessToken,
+          tokenType: request.auth.tokenType ? replaceVariables(request.auth.tokenType, allVariables) : request.auth.tokenType,
+        }
+        : request.auth,
     };
   }, [getActiveEnvironment, globalVariables]);
 
@@ -665,12 +676,17 @@ function App() {
       const headers = parseKeyValuePairs(processedRequest.headers);
 
       if (processedRequest.auth) {
+        // ✅ КРИТИЧНО: удаляем все варианты Authorization (в разном регистре)
+        // прежде чем установить новый, чтобы не было дублей
+        removeHeaderCaseInsensitive(headers, 'Authorization');
+
         if (processedRequest.auth.type === 'bearer' && processedRequest.auth.token) {
           headers['Authorization'] = `Bearer ${processedRequest.auth.token}`;
         } else if (processedRequest.auth.type === 'basic' && processedRequest.auth.username) {
           headers['Authorization'] = `Basic ${btoa(unescape(encodeURIComponent(`${processedRequest.auth.username}:${processedRequest.auth.password || ''}`)))}`;
         } else if (processedRequest.auth.type === 'apikey' && processedRequest.auth.apiKey && processedRequest.auth.apiValue) {
           if (processedRequest.auth.addTo === 'header') {
+            removeHeaderCaseInsensitive(headers, processedRequest.auth.apiKey);
             headers[processedRequest.auth.apiKey] = processedRequest.auth.apiValue;
           } else {
             urlSearchParams.set(processedRequest.auth.apiKey, processedRequest.auth.apiValue);
@@ -1019,9 +1035,6 @@ function App() {
     }
   }, [collections, showToast]);
 
-  /**
-   * ИМПОРТ КОЛЛЕКЦИЙ с дедупликацией по имени.
-   */
   const handleImportCollections = useCallback(async (importedCollections: Collection[]) => {
     const updated = mergeCollections(collections, importedCollections);
     setCollections(updated);
@@ -1131,11 +1144,8 @@ function App() {
     storage.saveCollections(updatedCollections);
   }, []);
 
-  /**
-   * СОХРАНЕНИЕ ОКРУЖЕНИЙ с дедупликацией по имени.
-   */
   const handleSaveEnvironments = useCallback(async (envs: Environment[], globals: KeyValuePair[]) => {
-    const deduped = mergeEnvironments([], envs);  // дедупликация внутри
+    const deduped = mergeEnvironments([], envs);
     setEnvironments(deduped);
     setGlobalVariables(globals);
     if (activeEnvId && !deduped.find(e => e.id === activeEnvId)) {
@@ -1148,9 +1158,6 @@ function App() {
     ]);
   }, [activeEnvId]);
 
-  /**
-   * ИМПОРТ ОКРУЖЕНИЙ с дедупликацией по имени.
-   */
   const handleImportEnvironments = useCallback(async (envs: Environment[]) => {
     const updated = mergeEnvironments(environments, envs);
     setEnvironments(updated);
