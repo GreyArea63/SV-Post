@@ -78,6 +78,12 @@ export interface Environment {
   id: string;
   name: string;
   variables: KeyValuePair[];
+  /** 
+   * ✅ НОВОЕ: Глобальный Test Script.
+   * Выполняется ПЕРЕД локальным test-скриптом каждого запроса.
+   * Используется для авто-обновления токена при 401.
+   */
+  globalTestScript?: string;
 }
 
 // ============ Postman Import Types ============
@@ -108,6 +114,7 @@ export interface PostmanCollectionFile {
   info: PostmanCollectionInfo;
   item: any[];
 }
+
 // ============ Script Execution Types ============
 export interface TestResult {
   name: string;
@@ -123,6 +130,8 @@ export interface ScriptExecutionResult {
   logs: string[];
   error?: string;
   skipped?: boolean;
+  /** Устанавливается скриптом через pm.retryRequest(). App.tsx увидит флаг и повторит запрос. */
+  retry?: boolean;
 }
 
 export interface ScriptContext {

@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const electron_1 = require("electron");
 console.log('Preload script loaded');
-// Создаём API объект
 const electronAPI = {
     // === Общие методы ===
     getAppVersion: () => electron_1.ipcRenderer.invoke('get-app-version'),
@@ -10,9 +9,7 @@ const electronAPI = {
     getAppPath: () => electron_1.ipcRenderer.invoke('get-app-path'),
     isElectron: true,
     copyToClipboard: (text) => {
-        // @ts-ignore - в preload скрипте есть доступ к DOM API
         if (typeof navigator !== 'undefined' && navigator.clipboard) {
-            // @ts-ignore
             navigator.clipboard.writeText(text);
         }
     },
@@ -66,10 +63,8 @@ const electronAPI = {
         electron_1.ipcRenderer.removeAllListeners('update-downloaded');
     },
 };
-// Экспонируем API для рендер процесса
 electron_1.contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 if (typeof window !== 'undefined') {
-    // @ts-ignore
     window.addEventListener('DOMContentLoaded', () => {
         console.log('DOM loaded in preload');
     });

@@ -60,6 +60,7 @@ const MAX_HISTORY = 100;
 const DB_INIT_DELAY = 300;
 const DB_MAX_RETRIES = 3;
 const DB_RETRY_DELAY = 1000;
+const MAX_REQUEST_RETRIES = 2;
 
 // ============================================================
 // УТИЛИТЫ
@@ -99,10 +100,6 @@ const hasUnsavedChanges = (tab: Tab): boolean => {
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/**
- * Удаляет из объекта headers все ключи, совпадающие с именем (регистронезависимо).
- * Нужно, чтобы не было двух заголовков Authorization в разном регистре.
- */
 const removeHeaderCaseInsensitive = (headers: Record<string, string>, name: string): void => {
   const lower = name.toLowerCase();
   Object.keys(headers).forEach(key => {
@@ -124,7 +121,7 @@ const mergeEnvironments = (
     const key = e.name.trim().toLowerCase();
     const prev = map.get(key);
     if (prev) {
-      map.set(key, { ...prev, name: e.name, variables: e.variables });
+      map.set(key, { ...prev, name: e.name, variables: e.variables, globalTestScript: e.globalTestScript });
     } else {
       map.set(key, { ...e, id: generateId() });
     }
@@ -486,9 +483,6 @@ function App() {
     return environments.find(env => env.id === activeEnvId) || null;
   }, [environments, activeEnvId]);
 
-  /**
-   * ИСПРАВЛЕНО: теперь обрабатывается auth.token, username, password, apiKey, apiValue, accessToken.
-   */
   const processRequest = useCallback((request: HttpRequest): HttpRequest => {
     const env = getActiveEnvironment();
     const envVariables = env?.variables || [];
@@ -502,7 +496,6 @@ function App() {
       headers: request.headers.map(h => ({ ...h, value: replaceVariables(h.value, allVariables) })),
       queryParams: request.queryParams.map(p => ({ ...p, value: replaceVariables(p.value, allVariables) })),
       body: { ...request.body, content: replaceVariables(request.body.content, allVariables) },
-      // ✅ КРИТИЧНО: заменяем переменные в auth
       auth: request.auth
         ? {
           ...request.auth,
@@ -518,15 +511,29 @@ function App() {
     };
   }, [getActiveEnvironment, globalVariables]);
 
+  /**
+   * ✅ ИЗМЕНЕНО: для test-скрипта добавляется globalTestScript из активного окружения.
+   * Глобальный скрипт выполняется ПЕРВЫМ, потом — локальный.
+   */
   const executeScript = useCallback(async (
     scriptType: 'preRequest' | 'test',
     script: string,
     httpRequest: HttpRequest,
     httpResponse: HttpResponse | null
   ): Promise<ScriptExecutionResult | null> => {
-    if (!script || !script.trim()) return null;
-
     const env = getActiveEnvironment();
+
+    // Для test-скрипта склеиваем глобальный + локальный
+    let finalScript = script || '';
+    if (scriptType === 'test') {
+      const globalScript = env?.globalTestScript || '';
+      if (globalScript.trim()) {
+        finalScript = globalScript + '\n\n' + finalScript;
+      }
+    }
+
+    if (!finalScript || !finalScript.trim()) return null;
+
     const envVars = env?.variables.filter((v) => v.enabled) || [];
     const globals = globalVariables.filter((v) => v.enabled);
 
@@ -550,7 +557,7 @@ function App() {
     context.request.headers = requestHeaders;
 
     const runner = new ScriptRunner(context);
-    const processedScript = replaceVariablesInScript(script, [...globals, ...envVars]);
+    const processedScript = replaceVariablesInScript(finalScript, [...globals, ...envVars]);
 
     return await runner.runScript(processedScript, httpResponse || undefined);
   }, [getActiveEnvironment, globalVariables]);
@@ -663,171 +670,128 @@ function App() {
       tab.id === activeTabId ? { ...tab, loading: true, error: null, response: null } : tab
     ));
 
-    try {
-      const processedRequest = processRequest(activeTab.request);
-      let url = processedRequest.url;
-      const queryParams = parseKeyValuePairs(processedRequest.queryParams);
-      const urlSearchParams = new URLSearchParams(url.split('?')[1] || '');
-      Object.entries(queryParams).forEach(([key, value]) => {
-        urlSearchParams.set(key, value);
-      });
-      const headers = parseKeyValuePairs(processedRequest.headers);
+    let attempt = 0;
+    let currentPreRequestLogs = preRequestResult?.logs || [];
 
-      if (processedRequest.auth) {
-        // ✅ КРИТИЧНО: удаляем все варианты Authorization (в разном регистре)
-        // прежде чем установить новый, чтобы не было дублей
-        removeHeaderCaseInsensitive(headers, 'Authorization');
+    while (attempt <= MAX_REQUEST_RETRIES) {
+      try {
+        const processedRequest = processRequest(activeTab.request);
+        let url = processedRequest.url;
+        const queryParams = parseKeyValuePairs(processedRequest.queryParams);
+        const urlSearchParams = new URLSearchParams(url.split('?')[1] || '');
+        Object.entries(queryParams).forEach(([key, value]) => {
+          urlSearchParams.set(key, value);
+        });
+        const headers = parseKeyValuePairs(processedRequest.headers);
 
-        if (processedRequest.auth.type === 'bearer' && processedRequest.auth.token) {
-          headers['Authorization'] = `Bearer ${processedRequest.auth.token}`;
-        } else if (processedRequest.auth.type === 'basic' && processedRequest.auth.username) {
-          headers['Authorization'] = `Basic ${btoa(unescape(encodeURIComponent(`${processedRequest.auth.username}:${processedRequest.auth.password || ''}`)))}`;
-        } else if (processedRequest.auth.type === 'apikey' && processedRequest.auth.apiKey && processedRequest.auth.apiValue) {
-          if (processedRequest.auth.addTo === 'header') {
-            removeHeaderCaseInsensitive(headers, processedRequest.auth.apiKey);
-            headers[processedRequest.auth.apiKey] = processedRequest.auth.apiValue;
-          } else {
-            urlSearchParams.set(processedRequest.auth.apiKey, processedRequest.auth.apiValue);
-          }
-        } else if (processedRequest.auth.type === 'oauth2' && processedRequest.auth.accessToken) {
-          headers['Authorization'] = `${processedRequest.auth.tokenType || 'Bearer'} ${processedRequest.auth.accessToken}`;
-        }
-      }
+        if (processedRequest.auth) {
+          removeHeaderCaseInsensitive(headers, 'Authorization');
 
-      const queryString = urlSearchParams.toString();
-      const baseUrl = url.split('?')[0];
-      url = queryString ? `${baseUrl}?${queryString}` : baseUrl;
-      const startTime = Date.now();
-      const config: any = {
-        method: processedRequest.method.toLowerCase(),
-        url,
-        headers,
-        timeout: REQUEST_TIMEOUT,
-      };
-
-      if (processedRequest.body.type !== 'none' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(processedRequest.method)) {
-        switch (processedRequest.body.type) {
-          case 'json':
-          case 'raw':
-            try {
-              config.data = JSON.parse(processedRequest.body.content);
-              headers['Content-Type'] = 'application/json';
-            } catch {
-              config.data = processedRequest.body.content;
-              headers['Content-Type'] = 'text/plain';
-            }
-            break;
-          case 'x-www-form-urlencoded':
-            if (processedRequest.body.form && processedRequest.body.form.length > 0) {
-              const formData = new URLSearchParams();
-              processedRequest.body.form.forEach(field => {
-                if (field.enabled && field.key) formData.append(field.key, field.value);
-              });
-              config.data = formData.toString();
-              headers['Content-Type'] = 'application/x-www-form-urlencoded';
+          if (processedRequest.auth.type === 'bearer' && processedRequest.auth.token) {
+            headers['Authorization'] = `Bearer ${processedRequest.auth.token}`;
+          } else if (processedRequest.auth.type === 'basic' && processedRequest.auth.username) {
+            headers['Authorization'] = `Basic ${btoa(unescape(encodeURIComponent(`${processedRequest.auth.username}:${processedRequest.auth.password || ''}`)))}`;
+          } else if (processedRequest.auth.type === 'apikey' && processedRequest.auth.apiKey && processedRequest.auth.apiValue) {
+            if (processedRequest.auth.addTo === 'header') {
+              removeHeaderCaseInsensitive(headers, processedRequest.auth.apiKey);
+              headers[processedRequest.auth.apiKey] = processedRequest.auth.apiValue;
             } else {
+              urlSearchParams.set(processedRequest.auth.apiKey, processedRequest.auth.apiValue);
+            }
+          } else if (processedRequest.auth.type === 'oauth2' && processedRequest.auth.accessToken) {
+            headers['Authorization'] = `${processedRequest.auth.tokenType || 'Bearer'} ${processedRequest.auth.accessToken}`;
+          }
+        }
+
+        const queryString = urlSearchParams.toString();
+        const baseUrl = url.split('?')[0];
+        url = queryString ? `${baseUrl}?${queryString}` : baseUrl;
+        const startTime = Date.now();
+        const config: any = {
+          method: processedRequest.method.toLowerCase(),
+          url,
+          headers,
+          timeout: REQUEST_TIMEOUT,
+        };
+
+        if (processedRequest.body.type !== 'none' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(processedRequest.method)) {
+          switch (processedRequest.body.type) {
+            case 'json':
+            case 'raw':
+              try {
+                config.data = JSON.parse(processedRequest.body.content);
+                headers['Content-Type'] = 'application/json';
+              } catch {
+                config.data = processedRequest.body.content;
+                headers['Content-Type'] = 'text/plain';
+              }
+              break;
+            case 'x-www-form-urlencoded':
+              if (processedRequest.body.form && processedRequest.body.form.length > 0) {
+                const formData = new URLSearchParams();
+                processedRequest.body.form.forEach(field => {
+                  if (field.enabled && field.key) formData.append(field.key, field.value);
+                });
+                config.data = formData.toString();
+                headers['Content-Type'] = 'application/x-www-form-urlencoded';
+              } else {
+                config.data = processedRequest.body.content;
+                headers['Content-Type'] = 'application/x-www-form-urlencoded';
+              }
+              break;
+            case 'form-data':
+              if (processedRequest.body.form && processedRequest.body.form.length > 0) {
+                const formData = new FormData();
+                processedRequest.body.form.forEach(field => {
+                  if (field.enabled && field.key) formData.append(field.key, field.value);
+                });
+                config.data = formData;
+                delete headers['Content-Type'];
+              }
+              break;
+            case 'graphql':
+              try {
+                const graphqlData = JSON.parse(processedRequest.body.content);
+                config.data = { query: graphqlData.query || '', variables: graphqlData.variables || {}, operationName: graphqlData.operationName || null };
+                headers['Content-Type'] = 'application/json';
+              } catch {
+                config.data = { query: processedRequest.body.content };
+                headers['Content-Type'] = 'application/json';
+              }
+              break;
+            case 'binary':
               config.data = processedRequest.body.content;
-              headers['Content-Type'] = 'application/x-www-form-urlencoded';
-            }
-            break;
-          case 'form-data':
-            if (processedRequest.body.form && processedRequest.body.form.length > 0) {
-              const formData = new FormData();
-              processedRequest.body.form.forEach(field => {
-                if (field.enabled && field.key) formData.append(field.key, field.value);
-              });
-              config.data = formData;
-              delete headers['Content-Type'];
-            }
-            break;
-          case 'graphql':
-            try {
-              const graphqlData = JSON.parse(processedRequest.body.content);
-              config.data = { query: graphqlData.query || '', variables: graphqlData.variables || {}, operationName: graphqlData.operationName || null };
-              headers['Content-Type'] = 'application/json';
-            } catch {
-              config.data = { query: processedRequest.body.content };
-              headers['Content-Type'] = 'application/json';
-            }
-            break;
-          case 'binary':
-            config.data = processedRequest.body.content;
-            headers['Content-Type'] = 'application/octet-stream';
-            break;
+              headers['Content-Type'] = 'application/octet-stream';
+              break;
+          }
         }
-      }
 
-      const axiosResponse = await axios(config);
-      const endTime = Date.now();
-      const httpResponse: HttpResponse = {
-        status: axiosResponse.status,
-        statusText: axiosResponse.statusText,
-        headers: (axiosResponse.headers as any).toJSON ? (axiosResponse.headers as any).toJSON() : axiosResponse.headers,
-        data: axiosResponse.data,
-        time: endTime - startTime,
-        size: new Blob([JSON.stringify(axiosResponse.data)]).size,
-      };
-
-      let testResult: ScriptExecutionResult | null = null;
-      if (activeTab.request.scripts?.test) {
-        testResult = await executeScript('test', activeTab.request.scripts.test, activeTab.request, httpResponse);
-        if (testResult) {
-          await applyScriptChanges(testResult);
-        }
-      }
-
-      setTabs(prevTabs => prevTabs.map(tab =>
-        tab.id === activeTabId ? {
-          ...tab,
-          loading: false,
-          response: httpResponse,
-          error: null,
-          testResults: testResult?.testResults || [],
-          scriptLogs: [...(preRequestResult?.logs || []), ...(testResult?.logs || [])],
-        } : tab
-      ));
-
-      const historyItem: HistoryItem = {
-        id: generateId(),
-        request: activeTab.request,
-        response: httpResponse,
-        timestamp: Date.now(),
-      };
-      const newHistory = [historyItem, ...history].slice(0, MAX_HISTORY);
-      setHistory(newHistory);
-      await storage.saveHistory(newHistory);
-
-      if (testResult && testResult.testResults.length > 0) {
-        const passed = testResult.testResults.filter((t) => t.passed).length;
-        const total = testResult.testResults.length;
-        if (passed === total) {
-          showToast('success', `✓ ${httpResponse.status} · All ${total} tests passed`);
-        } else {
-          showToast('error', `✗ ${httpResponse.status} · ${passed}/${total} tests passed`);
-        }
-      } else {
-        showToast('success', `Запрос выполнен: ${httpResponse.status}`);
-      }
-
-    } catch (err: any) {
-      const endTime = Date.now();
-      const startTime = endTime - REQUEST_TIMEOUT;
-      if (err.response) {
+        const axiosResponse = await axios(config);
+        const endTime = Date.now();
         const httpResponse: HttpResponse = {
-          status: err.response.status,
-          statusText: err.response.statusText,
-          headers: (err.response.headers as any).toJSON ? (err.response.headers as any).toJSON() : err.response.headers,
-          data: err.response.data,
+          status: axiosResponse.status,
+          statusText: axiosResponse.statusText,
+          headers: (axiosResponse.headers as any).toJSON ? (axiosResponse.headers as any).toJSON() : axiosResponse.headers,
+          data: axiosResponse.data,
           time: endTime - startTime,
-          size: new Blob([JSON.stringify(err.response.data)]).size,
+          size: new Blob([JSON.stringify(axiosResponse.data)]).size,
         };
 
         let testResult: ScriptExecutionResult | null = null;
-        if (activeTab.request.scripts?.test) {
-          testResult = await executeScript('test', activeTab.request.scripts.test, activeTab.request, httpResponse);
+        if (activeTab.request.scripts?.test || getActiveEnvironment()?.globalTestScript?.trim()) {
+          testResult = await executeScript('test', activeTab.request.scripts?.test || '', activeTab.request, httpResponse);
           if (testResult) {
             await applyScriptChanges(testResult);
           }
+        }
+
+        if (testResult?.retry && attempt < MAX_REQUEST_RETRIES) {
+          attempt++;
+          console.log(`[Retry] Попытка ${attempt}/${MAX_REQUEST_RETRIES} после pm.retryRequest()`);
+          showToast('info', `Обновление токена... повторный запрос (${attempt}/${MAX_REQUEST_RETRIES})`);
+          await delay(150);
+          currentPreRequestLogs = [...currentPreRequestLogs, ...(testResult.logs || [])];
+          continue;
         }
 
         setTabs(prevTabs => prevTabs.map(tab =>
@@ -837,18 +801,89 @@ function App() {
             response: httpResponse,
             error: null,
             testResults: testResult?.testResults || [],
-            scriptLogs: [...(preRequestResult?.logs || []), ...(testResult?.logs || [])],
+            scriptLogs: [...currentPreRequestLogs, ...(testResult?.logs || [])],
           } : tab
         ));
-        showToast('error', `Ошибка: ${httpResponse.status}`);
-      } else {
-        setTabs(prevTabs => prevTabs.map(tab =>
-          tab.id === activeTabId ? { ...tab, loading: false, error: err.message || 'Ошибка соединения' } : tab
-        ));
-        showToast('error', err.message || 'Ошибка соединения');
+
+        const historyItem: HistoryItem = {
+          id: generateId(),
+          request: activeTab.request,
+          response: httpResponse,
+          timestamp: Date.now(),
+        };
+        const newHistory = [historyItem, ...history].slice(0, MAX_HISTORY);
+        setHistory(newHistory);
+        await storage.saveHistory(newHistory);
+
+        if (testResult && testResult.testResults.length > 0) {
+          const passed = testResult.testResults.filter((t) => t.passed).length;
+          const total = testResult.testResults.length;
+          if (passed === total) {
+            showToast('success', `✓ ${httpResponse.status} · All ${total} tests passed`);
+          } else {
+            showToast('error', `✗ ${httpResponse.status} · ${passed}/${total} tests passed`);
+          }
+        } else if (attempt > 0) {
+          showToast('success', `Запрос выполнен после обновления токена: ${httpResponse.status}`);
+        } else {
+          showToast('success', `Запрос выполнен: ${httpResponse.status}`);
+        }
+
+        return;
+
+      } catch (err: any) {
+        const endTime = Date.now();
+        const startTime = endTime - REQUEST_TIMEOUT;
+
+        if (err.response) {
+          const httpResponse: HttpResponse = {
+            status: err.response.status,
+            statusText: err.response.statusText,
+            headers: (err.response.headers as any).toJSON ? (err.response.headers as any).toJSON() : err.response.headers,
+            data: err.response.data,
+            time: endTime - startTime,
+            size: new Blob([JSON.stringify(err.response.data)]).size,
+          };
+
+          let testResult: ScriptExecutionResult | null = null;
+          if (activeTab.request.scripts?.test || getActiveEnvironment()?.globalTestScript?.trim()) {
+            testResult = await executeScript('test', activeTab.request.scripts?.test || '', activeTab.request, httpResponse);
+            if (testResult) {
+              await applyScriptChanges(testResult);
+            }
+          }
+
+          if (testResult?.retry && attempt < MAX_REQUEST_RETRIES) {
+            attempt++;
+            console.log(`[Retry] Попытка ${attempt}/${MAX_REQUEST_RETRIES} после pm.retryRequest() (ошибка ${httpResponse.status})`);
+            showToast('info', `Обновление токена... повторный запрос (${attempt}/${MAX_REQUEST_RETRIES})`);
+            await delay(150);
+            currentPreRequestLogs = [...currentPreRequestLogs, ...(testResult.logs || [])];
+            continue;
+          }
+
+          setTabs(prevTabs => prevTabs.map(tab =>
+            tab.id === activeTabId ? {
+              ...tab,
+              loading: false,
+              response: httpResponse,
+              error: null,
+              testResults: testResult?.testResults || [],
+              scriptLogs: [...currentPreRequestLogs, ...(testResult?.logs || [])],
+            } : tab
+          ));
+          showToast('error', `Ошибка: ${httpResponse.status}`);
+          return;
+        } else {
+          setTabs(prevTabs => prevTabs.map(tab =>
+            tab.id === activeTabId ? { ...tab, loading: false, error: err.message || 'Ошибка соединения' } : tab
+          ));
+          showToast('error', err.message || 'Ошибка соединения');
+          return;
+        }
       }
     }
-  }, [activeTab, activeTabId, processRequest, history, showToast, executeScript, applyScriptChanges]);
+  }, [activeTab, activeTabId, processRequest, history, showToast, executeScript, applyScriptChanges, getActiveEnvironment]);
 
   const handleTabClick = useCallback((tabId: string) => {
     if (activeTab && hasUnsavedChanges(activeTab) && tabId !== activeTabId) {

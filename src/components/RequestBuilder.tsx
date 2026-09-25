@@ -7,6 +7,11 @@ import { JsonEditor } from './JsonEditor';
 import { SchemaEditor } from './SchemaEditor';
 import { KeyValueEditor } from './KeyValueEditor';
 import { VariableTooltip } from './VariableTooltip';
+import {
+  GENERIC_JSON_SCHEMA,
+  M30_PRODUCT_SCHEMA,
+  PREPARATION_WAVE_STATUS_SCHEMA,
+} from '../utils/jsonSchemas';
 
 interface RequestBuilderProps {
   request: HttpRequest;
@@ -99,6 +104,39 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
     }));
   }, [usedVariables, allVariables]);
 
+  /**
+   * Определяет JSON Schema для автодополнения на основе URL и имени запроса.
+   * Меняйте логику под свои задачи.
+   */
+  const activeJsonSchema = useMemo(() => {
+    const url = request.url.toLowerCase();
+    const name = request.name.toLowerCase();
+
+    // M30 — Products (создание/редактирование товара)
+    if (
+      url.includes('/services/goa/products') ||
+      url.includes('/m30/') ||
+      name.includes('products') ||
+      name.includes('продукт') ||
+      name.includes('товар')
+    ) {
+      return M30_PRODUCT_SCHEMA;
+    }
+
+    // Preparation Waves — изменение статуса заказа
+    if (
+      url.includes('/supplies/') ||
+      url.includes('preparation-waves') ||
+      name.includes('status') ||
+      name.includes('статус')
+    ) {
+      return PREPARATION_WAVE_STATUS_SCHEMA;
+    }
+
+    // По умолчанию — универсальная схема
+    return GENERIC_JSON_SCHEMA;
+  }, [request.url, request.name]);
+
   const handleVariableClick = useCallback((varName: string) => {
     setSelectedVariable(varName);
   }, []);
@@ -139,8 +177,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   const updateBody = useCallback((body: RequestBody) => {
     const newBody = { ...request.body, ...body };
 
-    if ((body.type === 'form-data' || body.type === 'x-www-form-urlencoded') && 
-        !body.form && request.body.content) {
+    if ((body.type === 'form-data' || body.type === 'x-www-form-urlencoded') &&
+      !body.form && request.body.content) {
       try {
         const parsed = JSON.parse(request.body.content);
         if (typeof parsed === 'object' && parsed !== null) {
@@ -156,8 +194,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
       }
     }
 
-    if ((body.type === 'raw' || body.type === 'json' || body.type === 'graphql') && 
-        request.body.form && request.body.form.length > 0 && !body.content) {
+    if ((body.type === 'raw' || body.type === 'json' || body.type === 'graphql') &&
+      request.body.form && request.body.form.length > 0 && !body.content) {
       const obj: Record<string, string> = {};
       request.body.form.forEach(f => {
         if (f.enabled && f.key) obj[f.key] = f.value;
@@ -169,7 +207,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   }, [request, onChange]);
 
   const handleBeautify = useCallback(() => {
-    if (request.body.type === 'raw' && jsonFormat === 'JSON' && request.body.content) {
+    if ((request.body.type === 'raw' || request.body.type === 'json') && jsonFormat === 'JSON' && request.body.content) {
       try {
         const parsed = JSON.parse(request.body.content);
         const formatted = JSON.stringify(parsed, null, 2);
@@ -178,7 +216,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
         onError('Неверный формат JSON: ' + e.message);
       }
     }
-  }, [request.body.type, request.body.content, jsonFormat, updateBody, onError]);
+  }, [request.body, jsonFormat, updateBody, onError]);
 
   const handleMethodSelect = useCallback((newMethod: string) => {
     if (newMethod === request.method) return;
@@ -320,11 +358,10 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
             <button
               key={v.name}
               onClick={() => handleVariableClick(v.name)}
-              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] whitespace-nowrap transition-all hover:scale-105 ${
-                v.resolved
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] whitespace-nowrap transition-all hover:scale-105 ${v.resolved
                   ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
                   : 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
-              }`}
+                }`}
               title={v.resolved ? `Значение: ${v.value} (клик для редактирования)` : 'Не определена (клик для добавления)'}
             >
               {v.resolved ? <CheckCircle size={8} /> : <AlertCircle size={8} />}
@@ -340,11 +377,10 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-2 py-0.5 font-medium transition-all text-[11px] rounded ${
-              activeTab === tab
+            className={`px-2 py-0.5 font-medium transition-all text-[11px] rounded ${activeTab === tab
                 ? 'text-gray-200 bg-gray-500/20'
                 : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-            }`}
+              }`}
           >
             {tab === 'docs' && <span className="flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-emerald-500"></span>Docs</span>}
             {tab === 'params' && 'Params'}
@@ -395,11 +431,10 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                   <button
                     key={authType.value}
                     onClick={() => handleAuthTypeChange(authType.value)}
-                    className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border transition-all ${
-                      currentAuth.type === authType.value
+                    className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border transition-all ${currentAuth.type === authType.value
                         ? 'bg-gray-500/20 border-gray-500/40 text-gray-200'
                         : 'bg-[#2d2d2d] border-[rgba(255,255,255,0.08)] text-gray-400 hover:border-[rgba(255,255,255,0.15)] hover:text-gray-300'
-                    }`}
+                      }`}
                   >
                     {authType.icon}
                     <span className="text-[10px] font-medium text-center">{authType.label}</span>
@@ -542,9 +577,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                       onChange={() => updateBody({ type: type.value } as RequestBody)}
                       className="sr-only"
                     />
-                    <div className={`w-3 h-3 rounded-full border-2 transition-all ${
-                      request.body.type === type.value ? 'border-gray-300' : 'border-gray-600 group-hover:border-gray-400'
-                    }`}>
+                    <div className={`w-3 h-3 rounded-full border-2 transition-all ${request.body.type === type.value ? 'border-gray-300' : 'border-gray-600 group-hover:border-gray-400'
+                      }`}>
                       {request.body.type === type.value && (
                         <div className="w-1.5 h-1.5 rounded-full bg-gray-300 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
                       )}
@@ -555,7 +589,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                   </span>
                 </label>
               ))}
-              {(request.body.type === 'raw' || request.body.type === 'graphql') && (
+              {(request.body.type === 'raw' || request.body.type === 'json' || request.body.type === 'graphql') && (
                 <div className="ml-auto flex items-center gap-2">
                   <select
                     value={jsonFormat}
@@ -577,7 +611,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                   <button
                     onClick={handleBeautify}
                     className="flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all"
-                    title="Beautify (format)"
+                    title="Beautify (Shift+Alt+F в редакторе)"
                   >
                     <Code size={11} />
                     Beautify
@@ -586,12 +620,19 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               )}
             </div>
 
-            {(request.body.type === 'raw' || request.body.type === 'graphql') && (
+            {(request.body.type === 'raw' || request.body.type === 'json' || request.body.type === 'graphql') && (
               <div className="flex-1 min-h-0">
                 <JsonEditor
                   value={request.body.content}
                   onChange={(content) => updateBody({ ...request.body, content })}
-                  placeholder={request.body.type === 'graphql' ? '{\n  "query": "query { ... }"\n}' : '{\n  "key": "value"\n}'}
+                  placeholder={
+                    request.body.type === 'graphql'
+                      ? '{\n  "query": "query { ... }"\n}'
+                      : '{\n  "key": "value"\n}'
+                  }
+                  schema={activeJsonSchema}
+                  language={request.body.type === 'graphql' ? 'graphql' : 'json'}
+                  height="100%"
                 />
               </div>
             )}
@@ -626,7 +667,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
           </div>
         )}
 
-        {/* ============ ВКЛАДКА SCRIPTS (ОЧИЩЕНА) ============ */}
+        {/* ============ ВКЛАДКА SCRIPTS ============ */}
         {activeTab === 'scripts' && (
           <div className="flex flex-col h-full min-h-0 space-y-4">
             {/* Pre-request Script */}
@@ -706,7 +747,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               />
             </div>
 
-            {/* Результаты последнего выполнения (если есть) */}
+            {/* Результаты последнего выполнения */}
             {lastScriptResult && (
               <div className="border border-[rgba(255,255,255,0.08)] rounded-lg overflow-hidden">
                 <button
@@ -716,11 +757,10 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium text-gray-300">Результаты выполнения</span>
                     {lastScriptResult.testResults.length > 0 && (
-                      <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
-                        lastScriptResult.testResults.some((t) => !t.passed)
+                      <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${lastScriptResult.testResults.some((t) => !t.passed)
                           ? 'bg-red-500/20 text-red-400'
                           : 'bg-emerald-500/20 text-emerald-400'
-                      }`}>
+                        }`}>
                         {lastScriptResult.testResults.filter((t) => t.passed).length}/
                         {lastScriptResult.testResults.length} tests
                       </span>
@@ -752,11 +792,10 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                         {lastScriptResult.testResults.map((test, i) => (
                           <div
                             key={i}
-                            className={`flex items-start gap-2 p-2 rounded text-xs ${
-                              test.passed
+                            className={`flex items-start gap-2 p-2 rounded text-xs ${test.passed
                                 ? 'bg-emerald-500/10 text-emerald-400'
                                 : 'bg-red-500/10 text-red-400'
-                            }`}
+                              }`}
                           >
                             {test.passed ? <CheckCircle size={12} className="shrink-0 mt-0.5" /> : <AlertCircle size={12} className="shrink-0 mt-0.5" />}
                             <div className="flex-1 min-w-0">
@@ -801,9 +840,9 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
           schema={bodySchema}
           onSave={(s) => { setBodySchema(s); setShowSchemaEditor(false); }}
           onClose={() => setShowSchemaEditor(false)}
-          onApplyExample={(ex) => { 
-            updateBody({ ...request.body, content: ex }); 
-            setShowSchemaEditor(false); 
+          onApplyExample={(ex) => {
+            updateBody({ ...request.body, content: ex });
+            setShowSchemaEditor(false);
           }}
         />
       )}

@@ -1,4 +1,6 @@
-import { useRef, useMemo, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
+import Editor, { OnMount, OnChange, BeforeMount } from '@monaco-editor/react';
+import type * as monaco from 'monaco-editor';
 
 // ============================================================
 // ТИПЫ
@@ -7,120 +9,15 @@ interface JsonEditorProps {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  /** JSON Schema для автодополнения (опционально) */
+  schema?: object;
+  /** Язык: 'json' (по умолчанию), 'graphql' */
+  language?: 'json' | 'graphql';
+  /** Только чтение (для просмотра) */
+  readOnly?: boolean;
+  /** Высота (CSS-значение) */
+  height?: string;
 }
-
-// ============================================================
-// КОНСТАНТЫ
-// ============================================================
-const DEBOUNCE_DELAY = 150; // мс для debounce подсветки
-const INDENT_SIZE = 2;
-
-// ============================================================
-// УТИЛИТЫ
-// ============================================================
-const escapeHtml = (text: string): string =>
-  text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
-// Оптимизированная подсветка JSON
-const highlightJson = (value: string): string => {
-  if (!value.trim()) return '';
-  
-  try {
-    const parsed = JSON.parse(value);
-    return highlightValue(parsed, 0);
-  } catch {
-    return highlightInvalidJson(value);
-  }
-};
-
-// Подсветка невалидного JSON (быстрый fallback)
-const highlightInvalidJson = (value: string): string => {
-  return value.split('\n').map(line => {
-    const trimmed = line.trim();
-    
-    if (trimmed.startsWith('//')) {
-      return `<span class="json-comment">${escapeHtml(line)}</span>`;
-    }
-    
-    if (trimmed.match(/^".*":/)) {
-      return line.replace(/(".*?")(\s*:)(.*)/, (_match, key, colon, rest) => {
-        const valueMatch = rest.trim().match(/^("(?:[^"\\]|\\.)*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/);
-        if (valueMatch) {
-          const value = valueMatch[1];
-          let valueClass = 'json-string';
-          if (value === 'true' || value === 'false') valueClass = 'json-boolean';
-          else if (value === 'null') valueClass = 'json-null';
-          else if (/^-?\d/.test(value)) valueClass = 'json-number';
-          
-          return `<span class="json-key">${escapeHtml(key)}</span>${escapeHtml(colon)} <span class="${valueClass}">${escapeHtml(value)}</span>`;
-        }
-        return `<span class="json-key">${escapeHtml(key)}</span>${escapeHtml(colon)}${escapeHtml(rest)}`;
-      });
-    }
-    
-    return escapeHtml(line);
-  }).join('\n');
-};
-
-// Рекурсивная подсветка валидного JSON
-const highlightValue = (value: any, indent: number): string => {
-  const indentStr = ' '.repeat(indent * INDENT_SIZE);
-  const childIndentStr = ' '.repeat((indent + 1) * INDENT_SIZE);
-  
-  if (value === null) {
-    return '<span class="json-null">null</span>';
-  }
-  
-  if (typeof value === 'boolean') {
-    return `<span class="json-boolean">${value}</span>`;
-  }
-  
-  if (typeof value === 'number') {
-    return `<span class="json-number">${value}</span>`;
-  }
-  
-  if (typeof value === 'string') {
-    return `<span class="json-string">"${escapeHtml(value)}"</span>`;
-  }
-  
-  if (Array.isArray(value)) {
-    if (value.length === 0) return '[]';
-    
-    if (value.length > 100) {
-      return `[... ${value.length} items]`;
-    }
-    
-    const items = value.map((item, i) => {
-      const comma = i < value.length - 1 ? ',' : '';
-      return `${childIndentStr}${highlightValue(item, indent + 1)}${comma}`;
-    }).join('\n');
-    
-    return `[\n${items}\n${indentStr}]`;
-  }
-  
-  if (typeof value === 'object') {
-    const entries = Object.entries(value);
-    if (entries.length === 0) return '{}';
-    
-    if (entries.length > 100) {
-      return `{... ${entries.length} keys}`;
-    }
-    
-    const items = entries.map(([key, val], i) => {
-      const comma = i < entries.length - 1 ? ',' : '';
-      return `${childIndentStr}<span class="json-key">"${escapeHtml(key)}"</span>: ${highlightValue(val, indent + 1)}${comma}`;
-    }).join('\n');
-    
-    return `{\n${items}\n${indentStr}}`;
-  }
-  
-  return String(value);
-};
 
 // ============================================================
 // КОМПОНЕНТ
@@ -129,154 +26,223 @@ export const JsonEditor = ({
   value,
   onChange,
   placeholder,
+  schema,
+  language = 'json',
+  readOnly = false,
+  height = '100%',
 }: JsonEditorProps) => {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const preRef = useRef<HTMLPreElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof monaco | null>(null);
+  const [isReady, setIsReady] = useState(false);
 
-  const [debouncedValue, setDebouncedValue] = useState(value);
-  const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  // ============================================================
+  // Настройка Monaco ДО монтирования
+  // ============================================================
+  const handleBeforeMount: BeforeMount = useCallback((monacoInstance) => {
+    monacoRef.current = monacoInstance;
 
-  // Debounce для подсветки синтаксиса
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedValue(value);
-    }, DEBOUNCE_DELAY);
-    
-    return () => clearTimeout(timer);
-  }, [value]);
+    // ===== Кастомная тема (тёмная, как SV-Post) =====
+    monacoInstance.editor.defineTheme('sv-post-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'string.key.json', foreground: '9CDCFE' },
+        { token: 'string.value.json', foreground: 'CE9178' },
+        { token: 'number', foreground: 'B5CEA8' },
+        { token: 'keyword.json', foreground: '569CD6' },
+        { token: 'delimiter', foreground: 'D4D4D4' },
+        { token: 'comment', foreground: '6A9955' },
+      ],
+      colors: {
+        'editor.background': '#1E1E1E',
+        'editor.foreground': '#D4D4D4',
+        'editorLineNumber.foreground': '#5A5A5A',
+        'editorLineNumber.activeForeground': '#C6C6C6',
+        'editor.lineHighlightBackground': '#2A2D2E',
+        'editor.selectionBackground': '#264F78',
+        'editorCursor.foreground': '#FFFFFF',
+        'editorIndentGuide.background1': '#404040',
+        'editorWidget.background': '#252526',
+        'editorSuggestWidget.background': '#252526',
+        'editorSuggestWidget.border': '#454545',
+        'editorSuggestWidget.selectedBackground': '#094771',
+        'editorSuggestWidget.highlightForeground': '#4FC1FF',
+      },
+    });
 
-  // Мемоизация подсветки
-  const highlightedCode = useMemo(() => {
-    return highlightJson(debouncedValue);
-  }, [debouncedValue]);
-
-  // Мемоизация нумерации строк (БЕЗ setState!)
-  const lineNumbers = useMemo(() => {
-    const count = value ? value.split('\n').length : 1;
-    return Array.from({ length: count }, (_, i) => i + 1);
-  }, [value]);
-
-  // Синхронизация скролла
-  const handleScroll = useCallback(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    
-    if (preRef.current) {
-      preRef.current.scrollTop = ta.scrollTop;
-      preRef.current.scrollLeft = ta.scrollLeft;
+    // ===== JSON Schema для автодополнения =====
+    if (language === 'json') {
+      if (schema) {
+        monacoInstance.languages.json.jsonDefaults.setDiagnosticsOptions({
+          validate: true,
+          allowComments: false,
+          schemas: [
+            {
+              uri: 'http://sv-post/schema.json',
+              fileMatch: ['*'],
+              schema: schema,
+            },
+          ],
+          enableSchemaRequest: false,
+        });
+      } else {
+        monacoInstance.languages.json.jsonDefaults.setDiagnosticsOptions({
+          validate: true,
+          allowComments: false,
+          schemas: [],
+          enableSchemaRequest: false,
+        });
+      }
     }
-    if (gutterRef.current) {
-      gutterRef.current.style.transform = `translateY(${-ta.scrollTop}px)`;
-    }
+  }, [language, schema]);
+
+  // ============================================================
+  // Настройка после монтирования
+  // ============================================================
+  const handleMount: OnMount = useCallback((editor, monacoInstance) => {
+    editorRef.current = editor;
+    monacoRef.current = monacoInstance;
+    setIsReady(true);
+
+    // Горячая клавиша Ctrl+S — сохранить запрос
+    editor.addCommand(
+      monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS,
+      () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 's',
+          ctrlKey: true,
+          bubbles: true,
+        }));
+      }
+    );
+
+    // Горячая клавиша Shift+Alt+F — форматирование
+    editor.addCommand(
+      monacoInstance.KeyMod.Shift | monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.KeyF,
+      () => {
+        editor.getAction('editor.action.formatDocument')?.run();
+      }
+    );
   }, []);
 
-  // Обработка клавиш
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const ta = e.currentTarget;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const indent = ' '.repeat(INDENT_SIZE);
-      const newValue = value.substring(0, start) + indent + value.substring(end);
-      onChange(newValue);
-      setTimeout(() => {
-        ta.selectionStart = ta.selectionEnd = start + INDENT_SIZE;
-      }, 0);
-      return;
-    }
-    
-    const openChars: Record<string, string> = { '{': '}', '[': ']', '"': '"' };
-    if (openChars[e.key]) {
-      e.preventDefault();
-      const closeChar = openChars[e.key];
-      const newValue = value.substring(0, start) + e.key + closeChar + value.substring(end);
-      onChange(newValue);
-      setTimeout(() => {
-        ta.selectionStart = ta.selectionEnd = start + 1;
-      }, 0);
-      return;
-    }
-  }, [value, onChange]);
+  // ============================================================
+  // Обработка изменения
+  // ============================================================
+  const handleChange: OnChange = useCallback((newValue) => {
+    onChange(newValue ?? '');
+  }, [onChange]);
 
-  // Обновление позиции курсора
-  const updateCursorPosition = useCallback((pos: number) => {
-    const textBeforeCursor = value.substring(0, pos);
-    const lines = textBeforeCursor.split('\n');
-    const line = lines.length;
-    const column = lines[lines.length - 1].length + 1;
-    setCursorPosition({ line, column });
+  // ============================================================
+  // Синхронизация внешнего value с редактором
+  // (для Beautify и подобных внешних изменений)
+  // ============================================================
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const currentValue = editor.getValue();
+    if (value !== currentValue) {
+      const selection = editor.getSelection();
+      const scrollTop = editor.getScrollTop();
+
+      editor.setValue(value);
+
+      if (selection) {
+        editor.setSelection(selection);
+      }
+      editor.setScrollTop(scrollTop);
+    }
   }, [value]);
 
-  const handleKeyUp = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    updateCursorPosition(e.currentTarget.selectionStart);
-  }, [updateCursorPosition]);
-
-  const handleClick = useCallback((e: React.MouseEvent<HTMLTextAreaElement>) => {
-    updateCursorPosition(e.currentTarget.selectionStart);
-  }, [updateCursorPosition]);
-
   return (
-    <div className="relative flex h-full w-full bg-[#1e1e1e] rounded-lg overflow-hidden border border-[rgba(255,255,255,0.08)]">
-      {/* Нумерация строк */}
-      <div
-        ref={gutterRef}
-        className="flex-shrink-0 w-12 bg-[#252525] border-r border-[rgba(255,255,255,0.08)] text-gray-600 text-xs font-mono py-3 px-2 select-none overflow-hidden will-change-transform"
-      >
-        {lineNumbers.map(num => (
-          <div key={num} className="leading-6 text-right h-6">
-            {num}
+    <div className="relative w-full h-full bg-[#1E1E1E] rounded-lg overflow-hidden border border-[rgba(255,255,255,0.08)]">
+      <Editor
+        height={height}
+        defaultLanguage={language}
+        value={value}
+        onChange={handleChange}
+        beforeMount={handleBeforeMount}
+        onMount={handleMount}
+        theme="sv-post-dark"
+        options={{
+          // === Основные ===
+          readOnly,
+          fontSize: 13,
+          fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
+          fontLigatures: true,
+          lineHeight: 20,
+          tabSize: 2,
+          insertSpaces: true,
+
+          // === Внешний вид ===
+          minimap: { enabled: true, scale: 1, showSlider: 'mouseover' },
+          scrollBeyondLastLine: false,
+          scrollbar: {
+            vertical: 'auto',
+            horizontal: 'auto',
+            verticalScrollbarSize: 10,
+            horizontalScrollbarSize: 10,
+          },
+          lineNumbers: 'on',
+          lineNumbersMinChars: 3,
+          glyphMargin: false,
+          folding: true,
+          renderLineHighlight: 'line',
+          renderWhitespace: 'selection',
+          wordWrap: 'off',
+
+          // === Редактирование ===
+          autoClosingBrackets: 'always',
+          autoClosingQuotes: 'always',
+          autoIndent: 'full',
+          formatOnPaste: true,
+          formatOnType: false,
+          wordBasedSuggestions: 'off',
+
+          // === Автодополнение ===
+          quickSuggestions: {
+            other: true,
+            comments: false,
+            strings: true,
+          },
+          suggestOnTriggerCharacters: true,
+          acceptSuggestionOnEnter: 'on',
+          snippetSuggestions: 'top',
+          suggestSelection: 'first',
+
+          // === Валидация ===
+          renderValidationDecorations: 'on',
+
+          // === UI ===
+          contextmenu: true,
+          mouseWheelZoom: true,
+          smoothScrolling: true,
+          cursorBlinking: 'smooth',
+          cursorSmoothCaretAnimation: 'on',
+          padding: { top: 12, bottom: 12 },
+          stickyScroll: { enabled: false },
+          bracketPairColorization: { enabled: true },
+          guides: { bracketPairs: true, indentation: true },
+        }}
+        loading={
+          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+            <div className="w-5 h-5 border-2 border-gray-600 border-t-gray-300 rounded-full animate-spin mr-2" />
+            Загрузка редактора...
           </div>
-        ))}
+        }
+      />
+
+      {/* Placeholder, если value пустой */}
+      {!value && placeholder && isReady && (
+        <div className="absolute top-3 left-12 text-gray-600 font-mono text-sm pointer-events-none whitespace-pre-wrap">
+          {placeholder}
+        </div>
+      )}
+
+      {/* Индикатор языка в правом нижнем углу */}
+      <div className="absolute bottom-1 right-3 px-2 py-0.5 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded text-[10px] text-gray-500 font-mono pointer-events-none">
+        {language.toUpperCase()}
       </div>
-
-      <div className="relative flex-1 h-full overflow-hidden">
-        {/* Подсвеченный код */}
-        <pre
-          ref={preRef}
-          className="absolute inset-0 m-0 p-3 font-mono text-sm leading-6 pointer-events-none overflow-auto whitespace-pre"
-          aria-hidden="true"
-          dangerouslySetInnerHTML={{ __html: highlightedCode }}
-          style={{ color: '#d4d4d4' }}
-        />
-
-        {/* Textarea для ввода */}
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onScroll={handleScroll}
-          onKeyDown={handleKeyDown}
-          onKeyUp={handleKeyUp}
-          onClick={handleClick}
-          spellCheck={false}
-          wrap="off"
-          className="absolute inset-0 w-full h-full m-0 p-3 font-mono text-sm leading-6 bg-transparent text-transparent caret-white resize-none outline-none border-0 overflow-auto whitespace-pre"
-          style={{ 
-            color: 'transparent', 
-            caretColor: 'white',
-            zIndex: 10
-          }}
-          placeholder={placeholder}
-        />
-      </div>
-
-      {/* Status bar */}
-      <div className="absolute bottom-0 right-0 px-2 py-1 bg-[#252525] border-t border-l border-[rgba(255,255,255,0.08)] text-[10px] text-gray-500 font-mono">
-        Ln {cursorPosition.line}, Col {cursorPosition.column}
-      </div>
-
-      {/* Стили для подсветки */}
-      <style>{`
-        .json-key { color: #9cdcfe; }
-        .json-string { color: #ce9178; }
-        .json-number { color: #b5cea8; }
-        .json-boolean { color: #569cd6; }
-        .json-null { color: #569cd6; }
-        .json-comment { color: #6a9955; }
-      `}</style>
     </div>
   );
 };

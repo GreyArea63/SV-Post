@@ -9,6 +9,7 @@ import {
   AlertCircle,
   Save,
   FileJson,
+  Code,
 } from 'lucide-react';
 import { Environment, KeyValuePair, ConflictAction } from '../types';
 import { generateId } from '../utils/helpers';
@@ -34,6 +35,49 @@ interface ConflictData {
   existing: Environment;
 }
 
+const GLOBAL_SCRIPT_PLACEHOLDER = `// Этот скрипт выполняется ПЕРЕД каждым локальным Test Script.
+// Используйте его для авто-обновления токена при 401.
+//
+// Доступные переменные:
+//   pm.env.get('loginUrl')   — URL для логина
+//   pm.env.get('username')   — логин
+//   pm.env.get('password')   — пароль
+//   pm.env.set('token', ...) — сохранить новый токен
+//
+// Пример:
+//
+// const responseText = JSON.stringify(pm.response.data || {});
+// const isUnauthorized =
+//   pm.response.status === 401 ||
+//   /expired|jwt|token|unauthorized/i.test(responseText);
+//
+// if (isUnauthorized) {
+//   const loginUrl = pm.env.get('loginUrl');
+//   const username = pm.env.get('username');
+//   const password = pm.env.get('password');
+//
+//   if (!loginUrl) throw new Error('ENV loginUrl is required');
+//
+//   const loginResponse = await pm.sendRequest({
+//     method: 'POST',
+//     url: loginUrl,
+//     headers: { 'Content-Type': 'application/json' },
+//     body: { username, password },
+//   });
+//
+//   const nextToken =
+//     loginResponse.data?.token ||
+//     loginResponse.data?.access_token ||
+//     loginResponse.data?.data?.token ||
+//     loginResponse.data?.data?.accessToken;
+//
+//   if (!nextToken) throw new Error('Token not found in login response');
+//
+//   pm.env.set('token', nextToken);
+//   pm.retryRequest();
+// }
+`;
+
 export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
   environments,
   globalVariables,
@@ -42,7 +86,7 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
   onSave,
   onExport,
 }) => {
-  const [activeTab, setActiveTab] = useState<'environments' | 'globals'>('environments');
+  const [activeTab, setActiveTab] = useState<'environments' | 'globals' | 'globalScript'>('environments');
   const [envList, setEnvList] = useState<Environment[]>(environments);
   const [globals, setGlobals] = useState<KeyValuePair[]>(globalVariables);
   const [selectedEnvId, setSelectedEnvId] = useState<string | null>(environments[0]?.id || null);
@@ -50,6 +94,8 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [conflictData, setConflictData] = useState<ConflictData | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  // Локальный state для глобального скрипта (для активного окружения)
+  const [globalScriptDraft, setGlobalScriptDraft] = useState<string>('');
 
   const isInitialMount = useRef(true);
   const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -62,7 +108,6 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
     }
     setEnvList(environments);
     setHasUnsavedChanges(false);
-    // Если выбранное окружение исчезло — выбираем первое доступное
     if (selectedEnvId && !environments.find(e => e.id === selectedEnvId)) {
       setSelectedEnvId(environments[0]?.id || null);
     }
@@ -71,6 +116,12 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
   useEffect(() => {
     setGlobals(globalVariables);
   }, [globalVariables]);
+
+  // Синхронизация globalScriptDraft с выбранным окружением
+  useEffect(() => {
+    const env = envList.find(e => e.id === selectedEnvId);
+    setGlobalScriptDraft(env?.globalTestScript || '');
+  }, [selectedEnvId, envList]);
 
   useEffect(() => {
     if (notification) {
@@ -88,19 +139,27 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
 
   const handleSave = useCallback(async () => {
     try {
-      await onSave(envList, globals);
+      // Применяем черновик глобального скрипта к выбранному окружению
+      const finalEnvList = envList.map(env =>
+        env.id === selectedEnvId
+          ? { ...env, globalTestScript: globalScriptDraft }
+          : env
+      );
+      await onSave(finalEnvList, globals);
+      setEnvList(finalEnvList);
       setHasUnsavedChanges(false);
       showNotification('success', 'Окружения сохранены');
     } catch (err: any) {
       showNotification('error', 'Ошибка сохранения: ' + (err.message || 'неизвестно'));
     }
-  }, [envList, globals, onSave]);
+  }, [envList, globals, onSave, selectedEnvId, globalScriptDraft]);
 
   const handleCreateEnv = useCallback(async () => {
     const newEnv: Environment = {
       id: generateId(),
       name: `Environment ${envList.length + 1}`,
       variables: [],
+      globalTestScript: '',
     };
     const newEnvList = [...envList, newEnv];
     setEnvList(newEnvList);
@@ -203,10 +262,6 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
     });
   };
 
-  /**
-   * ЕДИНАЯ функция добавления/замены окружения в локальном state.
-   * Возвращает обновлённый список.
-   */
   const buildUpdatedList = useCallback(
     (currentList: Environment[], newEnv: Environment, action: ConflictAction): Environment[] => {
       const existingByName = currentList.find(e => e.name.trim().toLowerCase() === newEnv.name.trim().toLowerCase());
@@ -217,7 +272,6 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
         );
       }
       if (action === 'copy' || !existingByName) {
-        // Уникальное имя
         let finalName = newEnv.name;
         if (existingByName) {
           let baseName = `${newEnv.name} (Copy)`;
@@ -230,7 +284,6 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
         }
         return [...currentList, { ...newEnv, name: finalName }];
       }
-      // skip
       return currentList;
     },
     []
@@ -244,14 +297,12 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
       setEnvList(updated);
       setHasUnsavedChanges(true);
 
-      // Находим только что добавленное/заменённое окружение для выделения
       const justAdded = updated.find(e =>
         e.name === conflictData.newEnv.name ||
         e.name.startsWith(conflictData.newEnv.name)
       );
       if (justAdded) setSelectedEnvId(justAdded.id);
 
-      // ЕДИНСТВЕННЫЙ вызов onSave — App.tsx сам обновит environments
       await onSave(updated, globals);
 
       setConflictData(null);
@@ -274,7 +325,6 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
 
     try {
       let content: string | null = null;
-      let fileName = '';
 
       if (window.electronAPI?.openFile) {
         const result = await window.electronAPI.openFile();
@@ -284,7 +334,6 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
           return;
         }
         content = result.content;
-        fileName = result.fileName || '';
       } else {
         content = await readFileViaInput();
         if (!content) {
@@ -307,25 +356,21 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
       if (fileType === 'environment') {
         const newEnv = convertPostmanEnvToApp(data);
 
-        // Проверяем конфликт по имени (регистронезависимо)
         const existing = envList.find(
           e => e.name.trim().toLowerCase() === newEnv.name.trim().toLowerCase()
         );
 
         if (existing) {
-          // Показываем модалку выбора действия
           setConflictData({ newEnv, existing });
           setIsImporting(false);
           return;
         }
 
-        // Конфликта нет — добавляем напрямую
         const updated = [...envList, newEnv];
         setEnvList(updated);
         setSelectedEnvId(newEnv.id);
         setHasUnsavedChanges(true);
 
-        // ЕДИНСТВЕННЫЙ вызов onSave
         await onSave(updated, globals);
 
         showNotification('success', `Импортировано окружение: ${newEnv.name}`);
@@ -402,6 +447,19 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
           >
             Global Variables
           </button>
+          <button
+            onClick={() => setActiveTab('globalScript')}
+            className={`flex-1 px-4 py-3 text-sm font-medium transition-all flex items-center justify-center gap-2 ${activeTab === 'globalScript'
+              ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
+              : 'text-gray-500 hover:text-gray-300'
+              }`}
+          >
+            <Code size={14} />
+            Global Test Script
+            {selectedEnv?.globalTestScript?.trim() && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            )}
+          </button>
         </div>
 
         <div className="flex-1 overflow-hidden flex">
@@ -425,6 +483,9 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
                       }`}
                   >
                     <span className="flex-1 text-left truncate">{env.name}</span>
+                    {env.globalTestScript?.trim() && (
+                      <span title="Есть глобальный скрипт" className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                    )}
                     {activeEnvId === env.id && <span className="w-2 h-2 rounded-full bg-emerald-500"></span>}
                   </button>
                 ))}
@@ -558,6 +619,59 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
               </div>
             </div>
           )}
+          {activeTab === 'globalScript' && (
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col">
+              {selectedEnv ? (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Code size={16} className="text-indigo-400" />
+                      <span className="text-sm font-medium text-gray-300">
+                        Global Test Script для «{selectedEnv.name}»
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-gray-500">
+                      {globalScriptDraft.length} символов
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Выполняется <span className="text-gray-300 font-medium">перед</span> локальным Test Script каждого запроса этого окружения.
+                  </p>
+                  <textarea
+                    value={globalScriptDraft}
+                    onChange={(e) => {
+                      setGlobalScriptDraft(e.target.value);
+                      setHasUnsavedChanges(true);
+                    }}
+                    placeholder={GLOBAL_SCRIPT_PLACEHOLDER}
+                    spellCheck={false}
+                    className="flex-1 min-h-[400px] px-3 py-2 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg focus:outline-none focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 text-sm text-gray-300 font-mono resize-none leading-relaxed placeholder:text-gray-600"
+                  />
+                  <div className="flex items-center justify-between mt-3">
+                    <span className="text-[10px] text-gray-600">
+                      Доступны: <code className="text-indigo-400">pm.env.get/set</code>, <code className="text-indigo-400">pm.sendRequest</code>, <code className="text-indigo-400">pm.retryRequest</code>
+                    </span>
+                    {globalScriptDraft.trim() && (
+                      <button
+                        onClick={() => {
+                          setGlobalScriptDraft('');
+                          setHasUnsavedChanges(true);
+                        }}
+                        className="text-[10px] text-gray-500 hover:text-red-400 transition-all"
+                      >
+                        Очистить
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="text-center text-gray-500 py-12">
+                  <AlertCircle size={40} className="mx-auto mb-3 opacity-30" />
+                  <p>Select an environment to edit its global script</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="px-6 py-4 border-t border-[rgba(255,255,255,0.08)] bg-[#1e1e1e] flex justify-between gap-3">
@@ -611,7 +725,6 @@ export const EnvironmentManager: React.FC<EnvironmentManagerProps> = ({
           </div>
         )}
 
-        {/* ============ Модалка конфликта имён ============ */}
         {conflictData && (
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[250] p-4">
             <div className="bg-[#1e1e1e] border border-[rgba(255,255,255,0.1)] rounded-lg shadow-2xl w-full max-w-md p-6">
