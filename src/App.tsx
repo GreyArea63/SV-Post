@@ -9,6 +9,7 @@ import { EnvironmentManager } from './components/EnvironmentManager';
 import { CollectionRunner } from './components/CollectionRunner';
 import { JsonBuilder } from './components/JsonBuilder';
 import { SaveRequestModal } from './components/SaveRequestModal';
+import { NewCollectionModal } from './components/NewCollectionModal';
 import { UpdateNotification } from './components/UpdateNotification';
 import {
   HttpRequest,
@@ -359,6 +360,7 @@ function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showSaveConfirm, setShowSaveConfirm] = useState<{ tabId: string; action: 'close' | 'switch' } | null>(null);
   const [showSaveRequestModal, setShowSaveRequestModal] = useState<{ request: HttpRequest; tabId: string } | null>(null);
+  const [showNewCollectionModal, setShowNewCollectionModal] = useState(false);
   const [requestHeight, setRequestHeight] = useState<number>(50);
   const [isResizing, setIsResizing] = useState(false);
   const [showDbErrorModal, setShowDbErrorModal] = useState(false);
@@ -511,10 +513,6 @@ function App() {
     };
   }, [getActiveEnvironment, globalVariables]);
 
-  /**
-   * ✅ ИЗМЕНЕНО: для test-скрипта добавляется globalTestScript из активного окружения.
-   * Глобальный скрипт выполняется ПЕРВЫМ, потом — локальный.
-   */
   const executeScript = useCallback(async (
     scriptType: 'preRequest' | 'test',
     script: string,
@@ -523,7 +521,6 @@ function App() {
   ): Promise<ScriptExecutionResult | null> => {
     const env = getActiveEnvironment();
 
-    // Для test-скрипта склеиваем глобальный + локальный
     let finalScript = script || '';
     if (scriptType === 'test') {
       const globalScript = env?.globalTestScript || '';
@@ -1056,16 +1053,169 @@ function App() {
     setShowSaveConfirm(null);
   }, [showSaveConfirm, performTabClose]);
 
-  const handleAddCollection = useCallback(async () => {
-    const name = prompt('Название коллекции:');
-    if (name) {
-      const newCollection: Collection = { id: generateId(), name, requests: [] };
-      const newCollections = [...collections, newCollection];
-      setCollections(newCollections);
-      await storage.saveCollections(newCollections);
-      showToast('success', `Коллекция "${name}" создана`);
-    }
+  // ============================================================
+  // КОЛЛЕКЦИИ — CRUD
+  // ============================================================
+
+  // Открытие модала создания коллекции
+  const handleAddCollection = useCallback(() => {
+    setShowNewCollectionModal(true);
+  }, []);
+
+  // Создание коллекции после подтверждения
+  const handleCreateCollection = useCallback(async (name: string) => {
+    const newCollection: Collection = { id: generateId(), name, requests: [] };
+    const newCollections = [...collections, newCollection];
+    setCollections(newCollections);
+    await storage.saveCollections(newCollections);
+    setShowNewCollectionModal(false);
+    showToast('success', `Коллекция "${name}" создана`);
   }, [collections, showToast]);
+
+  // Переименование коллекции
+  const handleRenameCollection = useCallback(async (collectionId: string, newName: string) => {
+    const updatedCollections = collections.map(c =>
+      c.id === collectionId ? { ...c, name: newName } : c
+    );
+    setCollections(updatedCollections);
+    await storage.saveCollections(updatedCollections);
+    showToast('success', `Коллекция переименована в "${newName}"`);
+  }, [collections, showToast]);
+
+  // Удаление коллекции
+  const handleDeleteCollection = useCallback(async (collectionId: string) => {
+    const updatedCollections = collections.filter(c => c.id !== collectionId);
+    setCollections(updatedCollections);
+    await storage.saveCollections(updatedCollections);
+
+    setTabs(prevTabs => {
+      const filtered = prevTabs.filter(tab => tab.collectionId !== collectionId);
+      if (filtered.length === 0) {
+        const defaultRequest = createDefaultRequest();
+        const newTab: Tab = {
+          id: generateId(),
+          request: defaultRequest,
+          response: null,
+          loading: false,
+          error: null,
+          savedSnapshot: createSnapshot(defaultRequest),
+        };
+        setActiveTabId(newTab.id);
+        return [newTab];
+      }
+      if (!filtered.find(t => t.id === activeTabId)) {
+        setActiveTabId(filtered[0].id);
+      }
+      return filtered;
+    });
+
+    showToast('success', 'Коллекция удалена');
+  }, [collections, activeTabId, showToast]);
+
+  // ============================================================
+  // ЗАПРОСЫ В КОЛЛЕКЦИЯХ — CRUD
+  // ============================================================
+
+  // Переименование запроса
+  const handleRenameRequest = useCallback(async (
+    collectionId: string,
+    requestId: string,
+    newName: string
+  ) => {
+    const updatedCollections = collections.map(c =>
+      c.id === collectionId
+        ? {
+          ...c,
+          requests: c.requests.map(r =>
+            r.id === requestId ? { ...r, name: newName } : r
+          ),
+        }
+        : c
+    );
+    setCollections(updatedCollections);
+    await storage.saveCollections(updatedCollections);
+
+    setTabs(prevTabs => prevTabs.map(tab => {
+      if (tab.request.id !== requestId) return tab;
+      const updatedRequest = { ...tab.request, name: newName };
+      return {
+        ...tab,
+        request: updatedRequest,
+        savedSnapshot: createSnapshot(updatedRequest),
+      };
+    }));
+
+    showToast('success', `Запрос переименован в "${newName}"`);
+  }, [collections, showToast]);
+
+  // Удаление запроса
+  const handleDeleteRequest = useCallback(async (
+    collectionId: string,
+    requestId: string
+  ) => {
+    const updatedCollections = collections.map(c =>
+      c.id === collectionId
+        ? { ...c, requests: c.requests.filter(r => r.id !== requestId) }
+        : c
+    );
+    setCollections(updatedCollections);
+    await storage.saveCollections(updatedCollections);
+
+    setTabs(prevTabs => {
+      const filtered = prevTabs.filter(tab => tab.request.id !== requestId);
+      if (filtered.length === 0) {
+        const defaultRequest = createDefaultRequest();
+        const newTab: Tab = {
+          id: generateId(),
+          request: defaultRequest,
+          response: null,
+          loading: false,
+          error: null,
+          savedSnapshot: createSnapshot(defaultRequest),
+        };
+        setActiveTabId(newTab.id);
+        return [newTab];
+      }
+      if (!filtered.find(t => t.id === activeTabId)) {
+        setActiveTabId(filtered[0].id);
+      }
+      return filtered;
+    });
+
+    showToast('success', 'Запрос удалён');
+  }, [collections, activeTabId, showToast]);
+
+  // Дублирование запроса
+  const handleDuplicateRequest = useCallback(async (
+    collectionId: string,
+    requestId: string
+  ) => {
+    const collection = collections.find(c => c.id === collectionId);
+    if (!collection) return;
+
+    const original = collection.requests.find(r => r.id === requestId);
+    if (!original) return;
+
+    const duplicate: HttpRequest = {
+      ...original,
+      id: generateId(),
+      name: `${original.name} (copy)`,
+    };
+
+    const updatedCollections = collections.map(c =>
+      c.id === collectionId
+        ? { ...c, requests: [...c.requests, duplicate] }
+        : c
+    );
+    setCollections(updatedCollections);
+    await storage.saveCollections(updatedCollections);
+
+    showToast('success', `Запрос "${duplicate.name}" создан`);
+  }, [collections, showToast]);
+
+  // ============================================================
+  // ОСТАЛЬНЫЕ ОБРАБОТЧИКИ
+  // ============================================================
 
   const handleImportCollections = useCallback(async (importedCollections: Collection[]) => {
     const updated = mergeCollections(collections, importedCollections);
@@ -1433,6 +1583,11 @@ function App() {
           onAddCollection={handleAddCollection}
           onRunRequest={handleRunRequest}
           onUpdateCollections={handleUpdateCollections}
+          onRenameRequest={handleRenameRequest}
+          onDeleteRequest={handleDeleteRequest}
+          onDuplicateRequest={handleDuplicateRequest}
+          onRenameCollection={handleRenameCollection}
+          onDeleteCollection={handleDeleteCollection}
         />
         <div className="flex-1 flex flex-col overflow-hidden">
           <Tabs
@@ -1519,6 +1674,12 @@ function App() {
           onSave={handleSaveRequestToCollection}
           onCreateCollection={handleCreateCollectionAndSave}
           onClose={() => setShowSaveRequestModal(null)}
+        />
+      )}
+      {showNewCollectionModal && (
+        <NewCollectionModal
+          onConfirm={handleCreateCollection}
+          onClose={() => setShowNewCollectionModal(false)}
         />
       )}
       {showSaveConfirm && (
