@@ -1,3 +1,4 @@
+import axios from 'axios';
 import {
   KeyValuePair,
   TestResult,
@@ -19,6 +20,7 @@ export class ScriptRunner {
   private globalsChanges: KeyValuePair[] = [];
   private environment: Record<string, string>;
   private globals: Record<string, string>;
+  private retryRequested = false;
 
   constructor(context: ScriptContext) {
     this.context = context;
@@ -32,7 +34,6 @@ export class ScriptRunner {
   private createPmObject(response?: HttpResponse) {
     const self = this;
 
-    // ВАЖНО: Извлекаем тело ответа из response.data (а не response.body)
     const responseBody = response ? response.data : null;
 
     const createExpect = (value: any) => ({
@@ -178,21 +179,13 @@ export class ScriptRunner {
         },
       }
       : {
-        status: () => {
-          throw new Error('No response available');
-        },
-        header: () => {
-          throw new Error('No response available');
-        },
-        jsonBody: () => {
-          throw new Error('No response available');
-        },
-        body: () => {
-          throw new Error('No response available');
-        },
+        status: () => { throw new Error('No response available'); },
+        header: () => { throw new Error('No response available'); },
+        jsonBody: () => { throw new Error('No response available'); },
+        body: () => { throw new Error('No response available'); },
       };
 
-    return {
+    const pmObject: any = {
       request: {
         url: this.context.request.url,
         method: this.context.request.method,
@@ -204,11 +197,14 @@ export class ScriptRunner {
       response: response
         ? {
           code: response.status,
-          status: response.statusText,
+          status: response.status,
+          statusText: response.statusText,
           headers: { ...response.headers },
           body: responseBody,
           responseTime: response.time,
+          time: response.time,
           responseSize: response.size,
+          size: response.size,
           json: () => {
             try {
               return typeof responseBody === 'string'
@@ -225,11 +221,14 @@ export class ScriptRunner {
         }
         : {
           code: 0,
-          status: '',
+          status: 0,
+          statusText: '',
           headers: {},
           body: null,
           responseTime: 0,
+          time: 0,
           responseSize: 0,
+          size: 0,
           json: () => null,
           text: () => '',
           to: {
@@ -402,15 +401,88 @@ export class ScriptRunner {
         throw new Error('__SKIP_REQUEST__');
       },
 
-      sendRequest: (
-        request: any,
-        callback?: (error: any, response: any) => void
-      ) => {
-        self.logs.push('[pm.sendRequest] Not implemented in browser context');
-        if (callback) {
-          setTimeout(() => callback(new Error('pm.sendRequest not supported'), null), 0);
+      /**
+       * ✅ РЕАЛИЗАЦИЯ pm.sendRequest — HTTP-запрос из скрипта
+       */
+      sendRequest: async (req: any, callback?: (error: any, response: any) => void) => {
+        try {
+          const config: any = {
+            method: (req.method || 'GET').toLowerCase(),
+            url: req.url,
+            headers: req.headers || {},
+            timeout: 30000,
+          };
+
+          if (req.body) {
+            if (typeof req.body === 'string') {
+              try {
+                config.data = JSON.parse(req.body);
+                config.headers = { ...config.headers, 'Content-Type': 'application/json' };
+              } catch {
+                config.data = req.body;
+              }
+            } else {
+              config.data = req.body;
+              config.headers = { ...config.headers, 'Content-Type': 'application/json' };
+            }
+          }
+
+          const axiosResponse = await axios(config);
+          const resp = {
+            code: axiosResponse.status,
+            status: axiosResponse.statusText,
+            headers: (axiosResponse.headers as any).toJSON
+              ? (axiosResponse.headers as any).toJSON()
+              : axiosResponse.headers,
+            data: axiosResponse.data,
+            responseTime: 0,
+            json: () => axiosResponse.data,
+            text: () =>
+              typeof axiosResponse.data === 'string'
+                ? axiosResponse.data
+                : JSON.stringify(axiosResponse.data),
+          };
+
+          self.logs.push(`[pm.sendRequest] ${req.method || 'GET'} ${req.url} → ${axiosResponse.status}`);
+
+          if (callback) callback(null, resp);
+          return resp;
+        } catch (error: any) {
+          const errResp = error.response
+            ? {
+              code: error.response.status,
+              status: error.response.statusText,
+              headers: (error.response.headers as any).toJSON
+                ? (error.response.headers as any).toJSON()
+                : error.response.headers,
+              data: error.response.data,
+              responseTime: 0,
+              json: () => error.response.data,
+              text: () =>
+                typeof error.response.data === 'string'
+                  ? error.response.data
+                  : JSON.stringify(error.response.data),
+            }
+            : null;
+
+          self.logs.push(
+            `[pm.sendRequest] ${req.method || 'GET'} ${req.url} → ERROR: ${error.message}`
+          );
+
+          if (callback) callback(error, errResp);
+          if (errResp) return errResp;
+          throw error;
         }
-        return Promise.reject(new Error('pm.sendRequest not supported in SV-Post'));
+      },
+
+      /**
+       * ✅ РЕАЛИЗАЦИЯ pm.retryRequest — устанавливает флаг,
+       * App.tsx увидит его и повторит исходный запрос.
+       */
+      retryRequest: () => {
+        self.retryRequested = true;
+        self.logs.push('[pm.retryRequest] Флаг повторного запроса установлен');
+        throw new Error('__RETRY_REQUEST__');
       },
 
       responseCode: response
@@ -427,6 +499,11 @@ export class ScriptRunner {
 
       responseBody: responseBody ?? '',
     };
+
+    // ✅ АЛИАС pm.env → pm.environment
+    pmObject.env = pmObject.environment;
+
+    return pmObject;
   }
 
   async runScript(
@@ -481,6 +558,7 @@ export class ScriptRunner {
         globalsChanges: this.globalsChanges,
         testResults: this.testResults,
         logs: this.logs,
+        retry: this.retryRequested,
       };
     } catch (error: any) {
       if (error?.message === '__SKIP_REQUEST__') {
@@ -490,6 +568,16 @@ export class ScriptRunner {
           testResults: this.testResults,
           logs: this.logs,
           skipped: true,
+        };
+      }
+
+      if (error?.message === '__RETRY_REQUEST__') {
+        return {
+          environmentChanges: this.environmentChanges,
+          globalsChanges: this.globalsChanges,
+          testResults: this.testResults,
+          logs: this.logs,
+          retry: true,
         };
       }
 
