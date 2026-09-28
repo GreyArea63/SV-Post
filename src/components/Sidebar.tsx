@@ -1,26 +1,83 @@
 import { useState, useMemo, useCallback, useRef, useEffect, memo } from 'react';
-import { Folder, Clock, Plus, ChevronRight, ChevronDown, Play, Trash2, Search, GripVertical, Pencil, Copy } from 'lucide-react';
-import { Collection, HistoryItem, HttpRequest } from '../types';
+import { Folder, FolderOpen, Clock, Plus, ChevronRight, ChevronDown, Play, Trash2, Search, GripVertical, Pencil, Copy } from 'lucide-react';
+import { Collection, CollectionFolder, HistoryItem, HttpRequest } from '../types';
 import { formatDate } from '../utils/helpers';
 import { getMethodColor } from '../utils/methodColors';
 
-// ============================================================
-// ТИПЫ
-// ============================================================
 interface SidebarProps {
   collections: Collection[];
   history: HistoryItem[];
-  onSelectRequest: (collectionId: string, requestId: string) => void;
+  onSelectRequest: (collectionId: string, requestId: string, folderId?: string) => void;
   onSelectHistory: (item: HistoryItem) => void;
   onDeleteHistory: (id: string) => void;
   onAddCollection: () => void;
   onRunRequest: (request: HttpRequest, collectionName: string) => void;
   onUpdateCollections: (collections: Collection[]) => void;
-  onRenameRequest: (collectionId: string, requestId: string, newName: string) => void;
-  onDeleteRequest: (collectionId: string, requestId: string) => void;
-  onDuplicateRequest: (collectionId: string, requestId: string) => void;
+  onRenameRequest: (collectionId: string, requestId: string, newName: string, folderId?: string) => void;
+  onDeleteRequest: (collectionId: string, requestId: string, folderId?: string) => void;
+  onDuplicateRequest: (collectionId: string, requestId: string, folderId?: string) => void;
   onRenameCollection: (collectionId: string, newName: string) => void;
   onDeleteCollection: (collectionId: string) => void;
+  onCreateFolder: (collectionId: string, parentFolderId: string | null, name: string) => void;
+  onRenameFolder: (collectionId: string, folderId: string, newName: string) => void;
+  onDeleteFolder: (collectionId: string, folderId: string) => void;
+  onMoveRequest: (
+    sourceCollectionId: string,
+    sourceFolderId: string | null,
+    requestId: string,
+    targetCollectionId: string,
+    targetFolderId: string | null
+  ) => void;
+}
+
+type DraggedItem = {
+  type: 'request' | 'folder';
+  id: string;
+  collectionId: string;
+  folderId: string | null;
+};
+
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+function findFolderInCollection(
+  collection: Collection,
+  folderId: string
+): CollectionFolder | null {
+  const search = (folders: CollectionFolder[]): CollectionFolder | null => {
+    for (const f of folders) {
+      if (f.id === folderId) return f;
+      const found = search(f.folders);
+      if (found) return found;
+    }
+    return null;
+  };
+  return search(collection.folders);
+}
+
+function findFolderWithRequest(
+  collection: Collection,
+  requestId: string
+): CollectionFolder | null {
+  const search = (folders: CollectionFolder[]): CollectionFolder | null => {
+    for (const f of folders) {
+      if (f.requests.some(r => r.id === requestId)) return f;
+      const found = search(f.folders);
+      if (found) return found;
+    }
+    return null;
+  };
+  return search(collection.folders);
+}
+
+function findRequestInFolder(
+  collection: Collection,
+  folderId: string,
+  requestId: string
+): HttpRequest | null {
+  const folder = findFolderInCollection(collection, folderId);
+  if (!folder) return null;
+  return folder.requests.find(r => r.id === requestId) || null;
 }
 
 // ============================================================
@@ -30,6 +87,7 @@ const RequestItem = memo(({
   request,
   collectionId,
   collectionName,
+  folderId,
   isDragging,
   isEditing,
   onSelect,
@@ -43,11 +101,12 @@ const RequestItem = memo(({
   request: HttpRequest;
   collectionId: string;
   collectionName: string;
+  folderId: string | null;
   isDragging: boolean;
   isEditing: boolean;
-  onSelect: (collectionId: string, requestId: string) => void;
+  onSelect: (collectionId: string, requestId: string, folderId?: string) => void;
   onRun: (request: HttpRequest, collectionName: string) => void;
-  onDragStart: (e: React.DragEvent, requestId: string, collectionId: string) => void;
+  onDragStart: (e: React.DragEvent, requestId: string, collectionId: string, folderId: string | null) => void;
   onDragEnd: () => void;
   onFinishEdit: (newName: string) => void;
   onCancelEdit: () => void;
@@ -113,26 +172,21 @@ const RequestItem = memo(({
   return (
     <div
       draggable
-      onDragStart={(e) => onDragStart(e, request.id, collectionId)}
+      onDragStart={(e) => onDragStart(e, request.id, collectionId, folderId)}
       onDragEnd={onDragEnd}
       onContextMenu={onContextMenu}
       className={`group relative flex items-center gap-2 px-2 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg transition-all cursor-pointer ${isDragging ? 'opacity-50' : ''
         }`}
-      onClick={() => onSelect(collectionId, request.id)}
+      onClick={() => onSelect(collectionId, request.id, folderId || undefined)}
       title={`${request.name}\n\n${request.method} ${request.url || '—'}\n\nПравый клик — меню`}
     >
       <GripVertical size={12} className="text-gray-600 cursor-grab active:cursor-grabbing shrink-0" />
-
       <span className={`font-bold text-[10px] w-10 shrink-0 ${getMethodColor(request.method)}`}>
         {request.method}
       </span>
-
-      {/* Название — занимает всю оставшуюся ширину */}
       <span className="flex-1 truncate min-w-0 pr-1">
         {request.name}
       </span>
-
-      {/* Только иконка Play — абсолютно позиционирована справа */}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -148,6 +202,209 @@ const RequestItem = memo(({
   );
 });
 RequestItem.displayName = 'RequestItem';
+
+// ============================================================
+// FOLDER ITEM (рекурсивный)
+// ============================================================
+const FolderItem = memo(({
+  folder,
+  collectionId,
+  collectionName,
+  expandedFolders,
+  draggedItem,
+  editingRequestId,
+  editingFolderId,
+  dragOverTarget,
+  onToggleFolder,
+  onSelectRequest,
+  onRunRequest,
+  onDragStartRequest,
+  onDragEnd,
+  onDragStartFolder,
+  onDropOnFolder,
+  onDragOverFolder,
+  onDragLeaveFolder,
+  onFinishEditRequest,
+  onCancelEditRequest,
+  onFinishEditFolder,
+  onCancelEditFolder,
+  onRequestContextMenu,
+  onFolderContextMenu,
+}: {
+  folder: CollectionFolder;
+  collectionId: string;
+  collectionName: string;
+  expandedFolders: Set<string>;
+  draggedItem: DraggedItem | null;
+  editingRequestId: string | null;
+  editingFolderId: string | null;
+  dragOverTarget: string | null;
+  onToggleFolder: (id: string) => void;
+  onSelectRequest: (collectionId: string, requestId: string, folderId?: string) => void;
+  onRunRequest: (request: HttpRequest, collectionName: string) => void;
+  onDragStartRequest: (e: React.DragEvent, requestId: string, collectionId: string, folderId: string | null) => void;
+  onDragEnd: () => void;
+  onDragStartFolder: (e: React.DragEvent, folderId: string, collectionId: string) => void;
+  onDropOnFolder: (e: React.DragEvent, folderId: string) => void;
+  onDragOverFolder: (e: React.DragEvent, folderId: string) => void;
+  onDragLeaveFolder: () => void;
+  onFinishEditRequest: (requestId: string, newName: string) => void;
+  onCancelEditRequest: () => void;
+  onFinishEditFolder: (folderId: string, newName: string) => void;
+  onCancelEditFolder: () => void;
+  onRequestContextMenu: (e: React.MouseEvent, requestId: string, folderId: string | null) => void;
+  onFolderContextMenu: (e: React.MouseEvent, folderId: string) => void;
+}) => {
+  const isExpanded = expandedFolders.has(folder.id);
+  const isDragOver = dragOverTarget === folder.id;
+  const isEditing = editingFolderId === folder.id;
+  const [editValue, setEditValue] = useState(folder.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isEditing) {
+      setEditValue(folder.name);
+      setTimeout(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }, 0);
+    }
+  }, [isEditing, folder.name]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const trimmed = editValue.trim();
+      if (trimmed && trimmed !== folder.name) {
+        onFinishEditFolder(folder.id, trimmed);
+      } else {
+        onCancelEditFolder();
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      onCancelEditFolder();
+    }
+  };
+
+  const handleBlur = () => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== folder.name) {
+      onFinishEditFolder(folder.id, trimmed);
+    } else {
+      onCancelEditFolder();
+    }
+  };
+
+  const totalItems = folder.requests.length + folder.folders.length;
+
+  return (
+    <div>
+      {isEditing ? (
+        <div className="flex items-center gap-2 px-2 py-1.5 text-xs bg-indigo-500/10 border border-indigo-500/30 rounded-lg">
+          <GripVertical size={12} className="text-gray-600 opacity-30 shrink-0" />
+          <Folder size={12} className="text-amber-400 shrink-0" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onBlur={handleBlur}
+            className="flex-1 min-w-0 bg-[#1e1e1e] border border-indigo-500/50 rounded px-1.5 py-0.5 text-xs text-gray-200 outline-none"
+          />
+        </div>
+      ) : (
+        <button
+          draggable
+          onDragStart={(e) => onDragStartFolder(e, folder.id, collectionId)}
+          onDragEnd={onDragEnd}
+          onClick={() => onToggleFolder(folder.id)}
+          onContextMenu={(e) => onFolderContextMenu(e, folder.id)}
+          onDragOver={(e) => onDragOverFolder(e, folder.id)}
+          onDragLeave={onDragLeaveFolder}
+          onDrop={(e) => onDropOnFolder(e, folder.id)}
+          className={`w-full flex items-center gap-2 px-2 py-1.5 text-xs transition-all rounded-lg ${isDragOver
+            ? 'bg-indigo-500/20 border border-indigo-500/40'
+            : 'text-gray-300 hover:bg-white/5'
+            }`}
+          title="Правый клик — меню папки"
+        >
+          {isExpanded ? (
+            <ChevronDown size={12} className="text-gray-500 shrink-0" />
+          ) : (
+            <ChevronRight size={12} className="text-gray-500 shrink-0" />
+          )}
+          {isExpanded ? (
+            <FolderOpen size={12} className="text-amber-400 shrink-0" />
+          ) : (
+            <Folder size={12} className="text-amber-400 shrink-0" />
+          )}
+          <span className="flex-1 text-left truncate">{folder.name}</span>
+          <span className="text-[10px] text-gray-500 shrink-0">{totalItems}</span>
+        </button>
+      )}
+
+      {isExpanded && !isEditing && (
+        <div className="ml-3 mt-0.5 space-y-0.5 border-l border-[rgba(255,255,255,0.05)] pl-1">
+          {folder.folders.map(subFolder => (
+            <FolderItem
+              key={subFolder.id}
+              folder={subFolder}
+              collectionId={collectionId}
+              collectionName={collectionName}
+              expandedFolders={expandedFolders}
+              draggedItem={draggedItem}
+              editingRequestId={editingRequestId}
+              editingFolderId={editingFolderId}
+              dragOverTarget={dragOverTarget}
+              onToggleFolder={onToggleFolder}
+              onSelectRequest={onSelectRequest}
+              onRunRequest={onRunRequest}
+              onDragStartRequest={onDragStartRequest}
+              onDragEnd={onDragEnd}
+              onDragStartFolder={onDragStartFolder}
+              onDropOnFolder={onDropOnFolder}
+              onDragOverFolder={onDragOverFolder}
+              onDragLeaveFolder={onDragLeaveFolder}
+              onFinishEditRequest={onFinishEditRequest}
+              onCancelEditRequest={onCancelEditRequest}
+              onFinishEditFolder={onFinishEditFolder}
+              onCancelEditFolder={onCancelEditFolder}
+              onRequestContextMenu={onRequestContextMenu}
+              onFolderContextMenu={onFolderContextMenu}
+            />
+          ))}
+
+          {folder.requests.map(request => (
+            <RequestItem
+              key={request.id}
+              request={request}
+              collectionId={collectionId}
+              collectionName={collectionName}
+              folderId={folder.id}
+              isDragging={draggedItem?.type === 'request' && draggedItem.id === request.id}
+              isEditing={editingRequestId === request.id}
+              onSelect={onSelectRequest}
+              onRun={onRunRequest}
+              onDragStart={onDragStartRequest}
+              onDragEnd={onDragEnd}
+              onFinishEdit={(newName) => onFinishEditRequest(request.id, newName)}
+              onCancelEdit={onCancelEditRequest}
+              onContextMenu={(e) => onRequestContextMenu(e, request.id, folder.id)}
+            />
+          ))}
+
+          {totalItems === 0 && (
+            <div className="text-[10px] text-gray-600 italic px-2 py-1">
+              Пустая папка
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+FolderItem.displayName = 'FolderItem';
 
 // ============================================================
 // CONTEXT MENU
@@ -179,9 +436,8 @@ const ContextMenu = memo(({ x, y, items, onClose }: ContextMenuProps) => {
     };
   }, [onClose]);
 
-  // Регулируем позицию, чтобы меню не уходило за край экрана
   const adjustedX = Math.min(x, window.innerWidth - 200);
-  const adjustedY = Math.min(y, window.innerHeight - 180);
+  const adjustedY = Math.min(y, window.innerHeight - 220);
 
   return (
     <div
@@ -198,8 +454,8 @@ const ContextMenu = memo(({ x, y, items, onClose }: ContextMenuProps) => {
             onClose();
           }}
           className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-all text-left ${item.danger
-              ? 'text-red-400 hover:bg-red-500/10'
-              : 'text-gray-300 hover:bg-white/5'
+            ? 'text-red-400 hover:bg-red-500/10'
+            : 'text-gray-300 hover:bg-white/5'
             }`}
         >
           {item.icon}
@@ -218,94 +474,147 @@ const CollectionItem = memo(({
   collection,
   isExpanded,
   isDragOver,
-  draggedRequestId,
+  expandedFolders,
+  draggedItem,
   editingRequestId,
+  editingFolderId,
+  dragOverTarget,
   onToggle,
   onSelectRequest,
   onRunRequest,
-  onDragStart,
+  onToggleFolder,
+  onDragStartRequest,
   onDragEnd,
-  onDragOver,
-  onDragLeave,
-  onDrop,
+  onDragStartFolder,
+  onDropOnCollection,
+  onDragOverCollection,
+  onDragLeaveCollection,
+  onDropOnFolder,
+  onDragOverFolder,
+  onDragLeaveFolder,
   onFinishEditRequest,
   onCancelEditRequest,
-  onDeleteRequest,
-  onDuplicateRequest,
+  onFinishEditFolder,
+  onCancelEditFolder,
   onRequestContextMenu,
+  onFolderContextMenu,
   onCollectionContextMenu,
 }: {
   collection: Collection;
   isExpanded: boolean;
   isDragOver: boolean;
-  draggedRequestId: string | null;
+  expandedFolders: Set<string>;
+  draggedItem: DraggedItem | null;
   editingRequestId: string | null;
+  editingFolderId: string | null;
+  dragOverTarget: string | null;
   onToggle: (id: string) => void;
-  onSelectRequest: (collectionId: string, requestId: string) => void;
+  onSelectRequest: (collectionId: string, requestId: string, folderId?: string) => void;
   onRunRequest: (request: HttpRequest, collectionName: string) => void;
-  onDragStart: (e: React.DragEvent, requestId: string, collectionId: string) => void;
+  onToggleFolder: (id: string) => void;
+  onDragStartRequest: (e: React.DragEvent, requestId: string, collectionId: string, folderId: string | null) => void;
   onDragEnd: () => void;
-  onDragOver: (e: React.DragEvent, collectionId: string) => void;
-  onDragLeave: () => void;
-  onDrop: (e: React.DragEvent, collectionId: string) => void;
+  onDragStartFolder: (e: React.DragEvent, folderId: string, collectionId: string) => void;
+  onDropOnCollection: (e: React.DragEvent, collectionId: string) => void;
+  onDragOverCollection: (e: React.DragEvent, collectionId: string) => void;
+  onDragLeaveCollection: () => void;
+  onDropOnFolder: (e: React.DragEvent, folderId: string) => void;
+  onDragOverFolder: (e: React.DragEvent, folderId: string) => void;
+  onDragLeaveFolder: () => void;
   onFinishEditRequest: (requestId: string, newName: string) => void;
   onCancelEditRequest: () => void;
-  onDeleteRequest: (requestId: string) => void;
-  onDuplicateRequest: (requestId: string) => void;
-  onRequestContextMenu: (e: React.MouseEvent, requestId: string) => void;
+  onFinishEditFolder: (folderId: string, newName: string) => void;
+  onCancelEditFolder: () => void;
+  onRequestContextMenu: (e: React.MouseEvent, requestId: string, folderId: string | null) => void;
+  onFolderContextMenu: (e: React.MouseEvent, folderId: string) => void;
   onCollectionContextMenu: (e: React.MouseEvent) => void;
-}) => (
-  <div>
-    <button
-      onClick={() => onToggle(collection.id)}
-      onContextMenu={onCollectionContextMenu}
-      onDragOver={(e) => onDragOver(e, collection.id)}
-      onDragLeave={onDragLeave}
-      onDrop={(e) => onDrop(e, collection.id)}
-      className={`w-full flex items-center gap-2 px-2 py-1.5 text-xs transition-all rounded-lg ${isDragOver
+}) => {
+  const totalItems = collection.requests.length + collection.folders.length;
+
+  return (
+    <div>
+      <button
+        onClick={() => onToggle(collection.id)}
+        onContextMenu={onCollectionContextMenu}
+        onDragOver={(e) => onDragOverCollection(e, collection.id)}
+        onDragLeave={onDragLeaveCollection}
+        onDrop={(e) => onDropOnCollection(e, collection.id)}
+        className={`w-full flex items-center gap-2 px-2 py-1.5 text-xs transition-all rounded-lg ${isDragOver
           ? 'bg-indigo-500/20 border border-indigo-500/40'
           : 'text-gray-300 hover:bg-white/5'
-        }`}
-      title="Правый клик — меню коллекции"
-    >
-      {isExpanded ? (
-        <ChevronDown size={12} className="text-gray-500" />
-      ) : (
-        <ChevronRight size={12} className="text-gray-500" />
-      )}
-      <Folder size={12} className="text-amber-400" />
-      <span className="flex-1 text-left truncate">{collection.name}</span>
-      <span className="text-[10px] text-gray-500">{collection.requests.length}</span>
-    </button>
-
-    {isExpanded && (
-      <div className="ml-6 mt-1 space-y-0.5">
-        {collection.requests.map(request => (
-          <RequestItem
-            key={request.id}
-            request={request}
-            collectionId={collection.id}
-            collectionName={collection.name}
-            isDragging={draggedRequestId === request.id}
-            isEditing={editingRequestId === request.id}
-            onSelect={onSelectRequest}
-            onRun={onRunRequest}
-            onDragStart={onDragStart}
-            onDragEnd={onDragEnd}
-            onFinishEdit={(newName) => onFinishEditRequest(request.id, newName)}
-            onCancelEdit={onCancelEditRequest}
-            onContextMenu={(e) => onRequestContextMenu(e, request.id)}
-          />
-        ))}
-        {collection.requests.length === 0 && (
-          <div className="text-[10px] text-gray-600 italic px-2 py-1">
-            Пустая коллекция
-          </div>
+          }`}
+        title="Правый клик — меню коллекции"
+      >
+        {isExpanded ? (
+          <ChevronDown size={12} className="text-gray-500" />
+        ) : (
+          <ChevronRight size={12} className="text-gray-500" />
         )}
-      </div>
-    )}
-  </div>
-));
+        <Folder size={12} className="text-amber-400" />
+        <span className="flex-1 text-left truncate">{collection.name}</span>
+        <span className="text-[10px] text-gray-500">{totalItems}</span>
+      </button>
+
+      {isExpanded && (
+        <div className="ml-3 mt-1 space-y-0.5 border-l border-[rgba(255,255,255,0.05)] pl-1">
+          {collection.folders.map(folder => (
+            <FolderItem
+              key={folder.id}
+              folder={folder}
+              collectionId={collection.id}
+              collectionName={collection.name}
+              expandedFolders={expandedFolders}
+              draggedItem={draggedItem}
+              editingRequestId={editingRequestId}
+              editingFolderId={editingFolderId}
+              dragOverTarget={dragOverTarget}
+              onToggleFolder={onToggleFolder}
+              onSelectRequest={onSelectRequest}
+              onRunRequest={onRunRequest}
+              onDragStartRequest={onDragStartRequest}
+              onDragEnd={onDragEnd}
+              onDragStartFolder={onDragStartFolder}
+              onDropOnFolder={onDropOnFolder}
+              onDragOverFolder={onDragOverFolder}
+              onDragLeaveFolder={onDragLeaveFolder}
+              onFinishEditRequest={onFinishEditRequest}
+              onCancelEditRequest={onCancelEditRequest}
+              onFinishEditFolder={onFinishEditFolder}
+              onCancelEditFolder={onCancelEditFolder}
+              onRequestContextMenu={onRequestContextMenu}
+              onFolderContextMenu={onFolderContextMenu}
+            />
+          ))}
+
+          {collection.requests.map(request => (
+            <RequestItem
+              key={request.id}
+              request={request}
+              collectionId={collection.id}
+              collectionName={collection.name}
+              folderId={null}
+              isDragging={draggedItem?.type === 'request' && draggedItem.id === request.id}
+              isEditing={editingRequestId === request.id}
+              onSelect={onSelectRequest}
+              onRun={onRunRequest}
+              onDragStart={onDragStartRequest}
+              onDragEnd={onDragEnd}
+              onFinishEdit={(newName) => onFinishEditRequest(request.id, newName)}
+              onCancelEdit={onCancelEditRequest}
+              onContextMenu={(e) => onRequestContextMenu(e, request.id, null)}
+            />
+          ))}
+
+          {totalItems === 0 && (
+            <div className="text-[10px] text-gray-600 italic px-2 py-1">
+              Пустая коллекция
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
 CollectionItem.displayName = 'CollectionItem';
 
 // ============================================================
@@ -359,19 +668,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteHistory,
   onAddCollection,
   onRunRequest,
-  onUpdateCollections,
   onRenameRequest,
   onDeleteRequest,
   onDuplicateRequest,
   onRenameCollection,
   onDeleteCollection,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  onMoveRequest,
 }) => {
   const [activeTab, setActiveTab] = useState<'collections' | 'history'>('collections');
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set());
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
-  const [draggedRequest, setDraggedRequest] = useState<{ requestId: string; collectionId: string } | null>(null);
-  const [dragOverCollection, setDragOverCollection] = useState<string | null>(null);
+  const [draggedItem, setDraggedItem] = useState<DraggedItem | null>(null);
+  const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
   const [editingRequestId, setEditingRequestId] = useState<string | null>(null);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -380,139 +694,137 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const toggleCollection = useCallback((id: string) => {
     setExpandedCollections(prev => {
-      const newExpanded = new Set(prev);
-      if (newExpanded.has(id)) {
-        newExpanded.delete(id);
-      } else {
-        newExpanded.add(id);
-      }
-      return newExpanded;
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
     });
   }, []);
 
-  const lowerQuery = searchQuery.toLowerCase();
-
-  const filteredCollections = useMemo(() => {
-    if (!lowerQuery) return collections;
-
-    return collections.map(collection => {
-      const filteredRequests = collection.requests.filter(request =>
-        request.name.toLowerCase().includes(lowerQuery) ||
-        request.url.toLowerCase().includes(lowerQuery) ||
-        request.method.toLowerCase().includes(lowerQuery)
-      );
-
-      if (collection.name.toLowerCase().includes(lowerQuery) || filteredRequests.length > 0) {
-        return {
-          ...collection,
-          requests: filteredRequests.length > 0 ? filteredRequests : collection.requests,
-        };
-      }
-      return null;
-    }).filter(Boolean) as Collection[];
-  }, [collections, lowerQuery]);
+  const toggleFolder = useCallback((id: string) => {
+    setExpandedFolders(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }, []);
 
   const isExpanded = useCallback((collectionId: string) => {
     if (searchQuery) return true;
     return expandedCollections.has(collectionId);
   }, [searchQuery, expandedCollections]);
 
-  const filteredHistory = useMemo(() => {
-    if (!lowerQuery) return history;
-    return history.filter(item =>
-      item.request.name.toLowerCase().includes(lowerQuery) ||
-      item.request.url.toLowerCase().includes(lowerQuery) ||
-      item.request.method.toLowerCase().includes(lowerQuery)
-    );
-  }, [history, lowerQuery]);
-
-  // ============================================================
-  // Drag-and-Drop
-  // ============================================================
-  const handleDragStart = useCallback((e: React.DragEvent, requestId: string, collectionId: string) => {
-    setDraggedRequest({ requestId, collectionId });
+  // Drag & Drop
+  const handleDragStartRequest = useCallback((
+    e: React.DragEvent,
+    requestId: string,
+    collectionId: string,
+    folderId: string | null
+  ) => {
+    setDraggedItem({ type: 'request', id: requestId, collectionId, folderId });
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', JSON.stringify({ requestId, collectionId }));
+    e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'request', requestId, collectionId, folderId }));
   }, []);
 
-  const handleDragOver = useCallback((e: React.DragEvent, collectionId: string) => {
+  const handleDragStartFolder = useCallback((
+    e: React.DragEvent,
+    folderId: string,
+    collectionId: string
+  ) => {
+    setDraggedItem({ type: 'folder', id: folderId, collectionId, folderId: null });
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'folder', folderId, collectionId }));
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    setDraggedItem(null);
+    setDragOverTarget(null);
+  }, []);
+
+  const handleDragOverCollection = useCallback((e: React.DragEvent, collectionId: string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragOverCollection(collectionId);
+    setDragOverTarget(collectionId);
+  }, []);
+
+  const handleDragOverFolder = useCallback((e: React.DragEvent, folderId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverTarget(folderId);
   }, []);
 
   const handleDragLeave = useCallback(() => {
-    setDragOverCollection(null);
+    setDragOverTarget(null);
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent, targetCollectionId: string) => {
+  const handleDropOnCollection = useCallback((e: React.DragEvent, targetCollectionId: string) => {
     e.preventDefault();
-    setDragOverCollection(null);
-
-    if (!draggedRequest) return;
-
-    const { requestId, collectionId: sourceCollectionId } = draggedRequest;
-
-    if (sourceCollectionId === targetCollectionId) {
-      setDraggedRequest(null);
-      return;
+    setDragOverTarget(null);
+    if (!draggedItem) return;
+    if (draggedItem.type === 'request') {
+      onMoveRequest(
+        draggedItem.collectionId,
+        draggedItem.folderId,
+        draggedItem.id,
+        targetCollectionId,
+        null
+      );
     }
+    setDraggedItem(null);
+  }, [draggedItem, onMoveRequest]);
 
-    const sourceCollection = collections.find(c => c.id === sourceCollectionId);
-    const targetCollection = collections.find(c => c.id === targetCollectionId);
+  const handleDropOnFolder = useCallback((e: React.DragEvent, targetFolderId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverTarget(null);
+    if (!draggedItem) return;
 
-    if (!sourceCollection || !targetCollection) {
-      setDraggedRequest(null);
-      return;
+    let targetCollectionId: string | null = null;
+    for (const c of collections) {
+      if (findFolderInCollection(c, targetFolderId)) {
+        targetCollectionId = c.id;
+        break;
+      }
     }
+    if (!targetCollectionId) return;
 
-    const request = sourceCollection.requests.find(r => r.id === requestId);
-    if (!request) {
-      setDraggedRequest(null);
-      return;
+    if (draggedItem.type === 'request') {
+      onMoveRequest(
+        draggedItem.collectionId,
+        draggedItem.folderId,
+        draggedItem.id,
+        targetCollectionId,
+        targetFolderId
+      );
     }
+    setDraggedItem(null);
+  }, [draggedItem, collections, onMoveRequest]);
 
-    const newRequest: HttpRequest = {
-      ...request,
-      id: Math.random().toString(36).substring(2) + Date.now().toString(36),
-    };
-
-    const updatedSourceCollection = {
-      ...sourceCollection,
-      requests: sourceCollection.requests.filter(r => r.id !== requestId),
-    };
-
-    const updatedTargetCollection = {
-      ...targetCollection,
-      requests: [...targetCollection.requests, newRequest],
-    };
-
-    const updatedCollections = collections.map(c => {
-      if (c.id === sourceCollectionId) return updatedSourceCollection;
-      if (c.id === targetCollectionId) return updatedTargetCollection;
-      return c;
-    });
-
-    onUpdateCollections(updatedCollections);
-    setDraggedRequest(null);
-  }, [draggedRequest, collections, onUpdateCollections]);
-
-  const handleDragEnd = useCallback(() => {
-    setDraggedRequest(null);
-    setDragOverCollection(null);
-  }, []);
-
-  // ============================================================
   // Context Menu
-  // ============================================================
-  const handleRequestContextMenu = useCallback((e: React.MouseEvent, requestId: string) => {
+  const handleRequestContextMenu = useCallback((
+    e: React.MouseEvent,
+    requestId: string,
+    folderId: string | null
+  ) => {
     e.preventDefault();
     e.stopPropagation();
 
-    const collection = collections.find(c => c.requests.some(r => r.id === requestId));
+    let collection: Collection | undefined;
+    if (folderId) {
+      for (const c of collections) {
+        if (findFolderInCollection(c, folderId)) {
+          collection = c;
+          break;
+        }
+      }
+    } else {
+      collection = collections.find(c => c.requests.some(r => r.id === requestId));
+    }
     if (!collection) return;
 
-    const request = collection.requests.find(r => r.id === requestId);
+    const request = folderId
+      ? findRequestInFolder(collection, folderId, requestId)
+      : collection.requests.find(r => r.id === requestId);
 
     setContextMenu({
       x: e.clientX,
@@ -526,14 +838,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {
           label: 'Копировать',
           icon: <Copy size={12} />,
-          onClick: () => onDuplicateRequest(collection.id, requestId),
+          onClick: () => onDuplicateRequest(collection!.id, requestId, folderId || undefined),
         },
         {
           label: 'Удалить',
           icon: <Trash2 size={12} />,
           onClick: () => {
             if (window.confirm(`Удалить запрос "${request?.name}"?`)) {
-              onDeleteRequest(collection.id, requestId);
+              onDeleteRequest(collection!.id, requestId, folderId || undefined);
             }
           },
           danger: true,
@@ -541,6 +853,50 @@ export const Sidebar: React.FC<SidebarProps> = ({
       ],
     });
   }, [collections, onDuplicateRequest, onDeleteRequest]);
+
+  const handleFolderContextMenu = useCallback((e: React.MouseEvent, folderId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    let collection: Collection | undefined;
+    for (const c of collections) {
+      if (findFolderInCollection(c, folderId)) {
+        collection = c;
+        break;
+      }
+    }
+    if (!collection) return;
+
+    const folder = findFolderInCollection(collection, folderId);
+    if (!folder) return;
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          label: 'Новая подпапка',
+          icon: <Plus size={12} />,
+          onClick: () => onCreateFolder(collection!.id, folderId, ''),
+        },
+        {
+          label: 'Переименовать',
+          icon: <Pencil size={12} />,
+          onClick: () => setEditingFolderId(folderId),
+        },
+        {
+          label: 'Удалить папку',
+          icon: <Trash2 size={12} />,
+          onClick: () => {
+            if (window.confirm(`Удалить папку "${folder.name}" и всё её содержимое?`)) {
+              onDeleteFolder(collection!.id, folderId);
+            }
+          },
+          danger: true,
+        },
+      ],
+    });
+  }, [collections, onCreateFolder, onDeleteFolder]);
 
   const handleCollectionContextMenu = useCallback((e: React.MouseEvent, collectionId: string) => {
     e.preventDefault();
@@ -553,6 +909,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       x: e.clientX,
       y: e.clientY,
       items: [
+        {
+          label: 'Новая папка',
+          icon: <Plus size={12} />,
+          onClick: () => onCreateFolder(collectionId, null, ''),
+        },
         {
           label: 'Переименовать коллекцию',
           icon: <Pencil size={12} />,
@@ -567,7 +928,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           label: 'Удалить коллекцию',
           icon: <Trash2 size={12} />,
           onClick: () => {
-            if (window.confirm(`Удалить коллекцию "${collection.name}" со всеми запросами?`)) {
+            if (window.confirm(`Удалить коллекцию "${collection.name}" со всем содержимым?`)) {
               onDeleteCollection(collectionId);
             }
           },
@@ -575,22 +936,45 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
       ],
     });
-  }, [collections, onRenameCollection, onDeleteCollection]);
+  }, [collections, onCreateFolder, onRenameCollection, onDeleteCollection]);
 
-  // ============================================================
-  // Edit Request
-  // ============================================================
   const handleFinishEditRequest = useCallback((requestId: string, newName: string) => {
-    const collection = collections.find(c => c.requests.some(r => r.id === requestId));
-    if (collection) {
-      onRenameRequest(collection.id, requestId, newName);
+    for (const c of collections) {
+      if (c.requests.some(r => r.id === requestId)) {
+        onRenameRequest(c.id, requestId, newName);
+        setEditingRequestId(null);
+        return;
+      }
+      const folder = findFolderWithRequest(c, requestId);
+      if (folder) {
+        onRenameRequest(c.id, requestId, newName, folder.id);
+        setEditingRequestId(null);
+        return;
+      }
     }
     setEditingRequestId(null);
   }, [collections, onRenameRequest]);
 
-  const handleCancelEditRequest = useCallback(() => {
-    setEditingRequestId(null);
-  }, []);
+  const handleFinishEditFolder = useCallback((folderId: string, newName: string) => {
+    for (const c of collections) {
+      if (findFolderInCollection(c, folderId)) {
+        onRenameFolder(c.id, folderId, newName);
+        setEditingFolderId(null);
+        return;
+      }
+    }
+    setEditingFolderId(null);
+  }, [collections, onRenameFolder]);
+
+  const filteredHistory = useMemo(() => {
+    const q = searchQuery.toLowerCase();
+    if (!q) return history;
+    return history.filter(item =>
+      item.request.name.toLowerCase().includes(q) ||
+      item.request.url.toLowerCase().includes(q) ||
+      item.request.method.toLowerCase().includes(q)
+    );
+  }, [history, searchQuery]);
 
   return (
     <div className="w-72 bg-[#1e1e1e] border-r border-[rgba(255,255,255,0.08)] flex flex-col h-full">
@@ -598,8 +982,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           onClick={() => { setActiveTab('collections'); setSearchQuery(''); }}
           className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-medium transition-all ${activeTab === 'collections'
-              ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
-              : 'text-gray-500 hover:text-gray-300'
+            ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
+            : 'text-gray-500 hover:text-gray-300'
             }`}
         >
           <Folder size={14} />
@@ -608,8 +992,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           onClick={() => { setActiveTab('history'); setSearchQuery(''); }}
           className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-medium transition-all ${activeTab === 'history'
-              ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
-              : 'text-gray-500 hover:text-gray-300'
+            ? 'text-gray-200 bg-[#252525] border-b-2 border-indigo-500'
+            : 'text-gray-500 hover:text-gray-300'
             }`}
         >
           <Clock size={14} />
@@ -642,35 +1026,44 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
 
             <div className="space-y-1">
-              {filteredCollections.map(collection => (
+              {collections.map(collection => (
                 <CollectionItem
                   key={collection.id}
                   collection={collection}
                   isExpanded={isExpanded(collection.id)}
-                  isDragOver={dragOverCollection === collection.id}
-                  draggedRequestId={draggedRequest?.requestId || null}
+                  isDragOver={dragOverTarget === collection.id}
+                  expandedFolders={expandedFolders}
+                  draggedItem={draggedItem}
                   editingRequestId={editingRequestId}
+                  editingFolderId={editingFolderId}
+                  dragOverTarget={dragOverTarget}
                   onToggle={toggleCollection}
                   onSelectRequest={onSelectRequest}
                   onRunRequest={onRunRequest}
-                  onDragStart={handleDragStart}
+                  onToggleFolder={toggleFolder}
+                  onDragStartRequest={handleDragStartRequest}
                   onDragEnd={handleDragEnd}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
+                  onDragStartFolder={handleDragStartFolder}
+                  onDropOnCollection={handleDropOnCollection}
+                  onDragOverCollection={handleDragOverCollection}
+                  onDragLeaveCollection={handleDragLeave}
+                  onDropOnFolder={handleDropOnFolder}
+                  onDragOverFolder={handleDragOverFolder}
+                  onDragLeaveFolder={handleDragLeave}
                   onFinishEditRequest={handleFinishEditRequest}
-                  onCancelEditRequest={handleCancelEditRequest}
-                  onDeleteRequest={(requestId) => onDeleteRequest(collection.id, requestId)}
-                  onDuplicateRequest={(requestId) => onDuplicateRequest(collection.id, requestId)}
+                  onCancelEditRequest={() => setEditingRequestId(null)}
+                  onFinishEditFolder={handleFinishEditFolder}
+                  onCancelEditFolder={() => setEditingFolderId(null)}
                   onRequestContextMenu={handleRequestContextMenu}
+                  onFolderContextMenu={handleFolderContextMenu}
                   onCollectionContextMenu={(e) => handleCollectionContextMenu(e, collection.id)}
                 />
               ))}
 
-              {filteredCollections.length === 0 && (
+              {collections.length === 0 && (
                 <div className="text-center py-8 text-xs text-gray-500">
                   <Folder size={32} className="mx-auto mb-2 opacity-30" />
-                  <p>{collections.length === 0 ? 'Нет коллекций' : 'Ничего не найдено'}</p>
+                  <p>Нет коллекций</p>
                 </div>
               )}
             </div>

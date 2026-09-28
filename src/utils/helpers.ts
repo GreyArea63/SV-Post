@@ -3,6 +3,11 @@ import {
   Environment,
   PostmanEnvironmentFile,
   ImportFileType,
+  Collection,
+  CollectionFolder,
+  HttpRequest,
+  RequestBody,
+  RequestAuth,
 } from '../types';
 
 // ИСПРАВЛЕНИЕ 3.1: используем crypto.randomUUID() вместо Math.random()
@@ -131,11 +136,9 @@ export const isVariableResolved = (
 export const detectPostmanFileType = (data: any): ImportFileType => {
   if (!data || typeof data !== 'object') return 'unknown';
 
-  // Environment или Globals (новый формат Postman)
   if (data._postman_variable_scope === 'environment') return 'environment';
   if (data._postman_variable_scope === 'globals') return 'globals';
 
-  // Collection (v2.1 формат)
   if (data.info && typeof data.info.schema === 'string' && data.info.schema.includes('collection')) {
     return 'collection';
   }
@@ -157,7 +160,7 @@ export const convertPostmanEnvToApp = (postmanEnv: PostmanEnvironmentFile): Envi
       id: generateId(),
       key: v.key || '',
       value: typeof v.value === 'string' ? v.value : String(v.value ?? ''),
-      enabled: v.enabled !== false, // по умолчанию true
+      enabled: v.enabled !== false,
     })),
   };
 };
@@ -178,7 +181,6 @@ export const convertPostmanGlobalsToApp = (
 
 /**
  * Мерджит новые глобальные переменные с существующими.
- * Если ключ уже есть — перезаписывает значение.
  */
 export const mergeGlobals = (
   existing: KeyValuePair[],
@@ -192,7 +194,6 @@ export const mergeGlobals = (
     if (v.key) {
       const ex = map.get(v.key);
       if (ex) {
-        // Перезаписываем значение, сохраняя ID
         map.set(v.key, { ...ex, value: v.value, enabled: v.enabled });
       } else {
         map.set(v.key, v);
@@ -200,4 +201,151 @@ export const mergeGlobals = (
     }
   });
   return Array.from(map.values());
+};
+
+// ============ Postman Collection → Collection (с папками) ============
+
+/**
+ * Рекурсивно парсит Postman items в папки + запросы.
+ */
+const parsePostmanItems = (
+  items: any[]
+): { folders: CollectionFolder[]; requests: HttpRequest[] } => {
+  const folders: CollectionFolder[] = [];
+  const requests: HttpRequest[] = [];
+
+  items.forEach((item: any) => {
+    // Папка (есть item[])
+    if (Array.isArray(item.item)) {
+      const parsed = parsePostmanItems(item.item);
+      folders.push({
+        id: generateId(),
+        name: item.name || 'Untitled Folder',
+        folders: parsed.folders,
+        requests: parsed.requests,
+      });
+      return;
+    }
+
+    // Запрос
+    if (item.request) {
+      const req = item.request;
+      const url = typeof req.url === 'string'
+        ? req.url
+        : req.url?.raw || '';
+
+      // Headers
+      const headers: KeyValuePair[] = (req.header || []).map((h: any) => ({
+        id: generateId(),
+        key: h.key || '',
+        value: h.value || '',
+        enabled: h.disabled !== true,
+      }));
+
+      // Query params
+      const queryParams: KeyValuePair[] = (
+        (typeof req.url === 'object' ? req.url?.query : null) || []
+      ).map((q: any) => ({
+        id: generateId(),
+        key: q.key || '',
+        value: q.value || '',
+        enabled: q.disabled !== true,
+      }));
+
+      // Body
+      let body: RequestBody = { type: 'none', content: '' };
+      if (req.body) {
+        if (req.body.mode === 'raw') {
+          let type: RequestBody['type'] = 'raw';
+          const lang = req.body.options?.raw?.language;
+          if (lang === 'json') type = 'json';
+          body = { type, content: req.body.raw || '' };
+        } else if (req.body.mode === 'urlencoded') {
+          body = {
+            type: 'x-www-form-urlencoded',
+            content: '',
+            form: (req.body.urlencoded || []).map((f: any) => ({
+              id: generateId(),
+              key: f.key || '',
+              value: f.value || '',
+              enabled: f.disabled !== true,
+            })),
+          };
+        } else if (req.body.mode === 'formdata') {
+          body = {
+            type: 'form-data',
+            content: '',
+            form: (req.body.formdata || []).map((f: any) => ({
+              id: generateId(),
+              key: f.key || '',
+              value: f.value || '',
+              enabled: f.disabled !== true,
+            })),
+          };
+        } else if (req.body.mode === 'graphql') {
+          body = {
+            type: 'graphql',
+            content: JSON.stringify({
+              query: req.body.graphql?.query || '',
+              variables: req.body.graphql?.variables
+                ? JSON.parse(req.body.graphql.variables)
+                : {},
+            }, null, 2),
+          };
+        }
+      }
+
+      // Auth
+      let auth: RequestAuth | undefined;
+      if (req.auth) {
+        if (req.auth.type === 'bearer') {
+          auth = { type: 'bearer', token: req.auth.bearer?.[0]?.value || '' };
+        } else if (req.auth.type === 'basic') {
+          auth = {
+            type: 'basic',
+            username: req.auth.basic?.[0]?.value || '',
+            password: req.auth.basic?.[1]?.value || '',
+          };
+        } else if (req.auth.type === 'apikey') {
+          const key = req.auth.apikey?.find((x: any) => x.key === 'key')?.value || '';
+          const value = req.auth.apikey?.find((x: any) => x.key === 'value')?.value || '';
+          const addTo = req.auth.apikey?.find((x: any) => x.key === 'in')?.value || 'header';
+          auth = { type: 'apikey', apiKey: key, apiValue: value, addTo };
+        }
+      }
+
+      // Scripts
+      const preRequestScript = item.event?.find((e: any) => e.listen === 'prerequest')?.script?.exec?.join('\n') || '';
+      const testScript = item.event?.find((e: any) => e.listen === 'test')?.script?.exec?.join('\n') || '';
+
+      requests.push({
+        id: generateId(),
+        name: item.name || 'Untitled Request',
+        method: (req.method || 'GET').toUpperCase(),
+        url,
+        headers,
+        queryParams,
+        body,
+        auth,
+        scripts: (preRequestScript || testScript)
+          ? { preRequest: preRequestScript, test: testScript }
+          : undefined,
+      });
+    }
+  });
+
+  return { folders, requests };
+};
+
+/**
+ * Конвертирует Postman Collection в формат приложения (с папками).
+ */
+export const convertPostmanCollectionToApp = (data: any): Collection => {
+  const parsed = parsePostmanItems(data.item || []);
+  return {
+    id: generateId(),
+    name: data.info?.name || 'Imported Collection',
+    folders: parsed.folders,
+    requests: parsed.requests,
+  };
 };

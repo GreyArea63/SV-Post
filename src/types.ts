@@ -32,6 +32,17 @@ export interface RequestBody {
   form?: KeyValuePair[];
 }
 
+export interface RequestSettings {
+  followRedirects?: boolean;
+  timeout?: number;
+  sendCookies?: boolean;
+  sslVerification?: boolean;
+  disableCache?: boolean;
+  keepAlive?: boolean;
+  proxy?: string;
+  userAgent?: string;
+}
+
 export interface HttpRequest {
   id: string;
   name: string;
@@ -46,10 +57,7 @@ export interface HttpRequest {
     test?: string;
   };
   documentation?: string;
-  settings?: {
-    followRedirects?: boolean;
-    timeout?: number;
-  };
+  settings?: RequestSettings;
 }
 
 export interface HttpResponse {
@@ -68,9 +76,23 @@ export interface HistoryItem {
   timestamp: number;
 }
 
+/**
+ * Папка внутри коллекции.
+ * Может содержать вложенные папки и запросы.
+ */
+export interface CollectionFolder {
+  id: string;
+  name: string;
+  folders: CollectionFolder[];
+  requests: HttpRequest[];
+}
+
 export interface Collection {
   id: string;
   name: string;
+  /** Папки внутри коллекции */
+  folders: CollectionFolder[];
+  /** Корневые запросы коллекции (не в папках) */
   requests: HttpRequest[];
 }
 
@@ -78,11 +100,6 @@ export interface Environment {
   id: string;
   name: string;
   variables: KeyValuePair[];
-  /** 
-   * ✅ НОВОЕ: Глобальный Test Script.
-   * Выполняется ПЕРЕД локальным test-скриптом каждого запроса.
-   * Используется для авто-обновления токена при 401.
-   */
   globalTestScript?: string;
 }
 
@@ -130,7 +147,6 @@ export interface ScriptExecutionResult {
   logs: string[];
   error?: string;
   skipped?: boolean;
-  /** Устанавливается скриптом через pm.retryRequest(). App.tsx увидит флаг и повторит запрос. */
   retry?: boolean;
 }
 

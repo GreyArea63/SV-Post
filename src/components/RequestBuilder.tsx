@@ -1,6 +1,12 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Send, AlertCircle, CheckCircle, Save, Share2, Code, Database, Key, Lock, User, RefreshCw, Play } from 'lucide-react';
-import { HttpRequest, KeyValuePair, RequestBody, Environment, Collection, RequestAuth, ScriptExecutionResult } from '../types';
+import {
+  Send, AlertCircle, CheckCircle, Save, Share2, Code, Database, Key, Lock, User,
+  RefreshCw, Play, Clock, Shield, Cookie, Globe, Zap, UserCog
+} from 'lucide-react';
+import {
+  HttpRequest, KeyValuePair, RequestBody, Environment, Collection, RequestAuth,
+  ScriptExecutionResult, RequestSettings
+} from '../types';
 import { findVariablesInText, isVariableResolved } from '../utils/helpers';
 import { getMethodColor } from '../utils/methodColors';
 import { JsonEditor } from './JsonEditor';
@@ -51,6 +57,18 @@ const AUTH_TYPES = [
   { value: 'oauth2', label: 'OAuth 2.0', icon: <RefreshCw size={14} /> },
 ] as const;
 
+// ✅ Значения по умолчанию для настроек
+const DEFAULT_SETTINGS: Required<RequestSettings> = {
+  followRedirects: true,
+  timeout: 30000,
+  sendCookies: true,
+  sslVerification: true,
+  disableCache: false,
+  keepAlive: true,
+  proxy: '',
+  userAgent: '',
+};
+
 export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   request,
   onChange,
@@ -79,6 +97,19 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   const activeEnv = environments.find(e => e.id === activeEnvId);
   const envVariables = activeEnv?.variables || [];
 
+  // ✅ Настройки с fallback к дефолтным значениям
+  const settings = useMemo<Required<RequestSettings>>(() => ({
+    ...DEFAULT_SETTINGS,
+    ...(request.settings || {}),
+  }), [request.settings]);
+
+  const updateSettings = useCallback((patch: Partial<RequestSettings>) => {
+    onChange({
+      ...request,
+      settings: { ...settings, ...patch },
+    });
+  }, [request, settings, onChange]);
+
   const allVariables = useMemo(() => {
     return [...globalVariables.filter(g => g.enabled), ...envVariables.filter(e => e.enabled)];
   }, [globalVariables, envVariables]);
@@ -104,15 +135,10 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
     }));
   }, [usedVariables, allVariables]);
 
-  /**
-   * Определяет JSON Schema для автодополнения на основе URL и имени запроса.
-   * Меняйте логику под свои задачи.
-   */
   const activeJsonSchema = useMemo(() => {
     const url = request.url.toLowerCase();
     const name = request.name.toLowerCase();
 
-    // M30 — Products (создание/редактирование товара)
     if (
       url.includes('/services/goa/products') ||
       url.includes('/m30/') ||
@@ -123,7 +149,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
       return M30_PRODUCT_SCHEMA;
     }
 
-    // Preparation Waves — изменение статуса заказа
     if (
       url.includes('/supplies/') ||
       url.includes('preparation-waves') ||
@@ -133,7 +158,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
       return PREPARATION_WAVE_STATUS_SCHEMA;
     }
 
-    // По умолчанию — универсальная схема
     return GENERIC_JSON_SCHEMA;
   }, [request.url, request.name]);
 
@@ -288,6 +312,10 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
     }
   }, [onRunTest]);
 
+  const handleResetSettings = useCallback(() => {
+    updateSettings(DEFAULT_SETTINGS);
+  }, [updateSettings]);
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Top Bar */}
@@ -359,8 +387,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               key={v.name}
               onClick={() => handleVariableClick(v.name)}
               className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] whitespace-nowrap transition-all hover:scale-105 ${v.resolved
-                  ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
-                  : 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                : 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
                 }`}
               title={v.resolved ? `Значение: ${v.value} (клик для редактирования)` : 'Не определена (клик для добавления)'}
             >
@@ -378,8 +406,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
             key={tab}
             onClick={() => setActiveTab(tab)}
             className={`px-2 py-0.5 font-medium transition-all text-[11px] rounded ${activeTab === tab
-                ? 'text-gray-200 bg-gray-500/20'
-                : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+              ? 'text-gray-200 bg-gray-500/20'
+              : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
               }`}
           >
             {tab === 'docs' && <span className="flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-emerald-500"></span>Docs</span>}
@@ -432,8 +460,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                     key={authType.value}
                     onClick={() => handleAuthTypeChange(authType.value)}
                     className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border transition-all ${currentAuth.type === authType.value
-                        ? 'bg-gray-500/20 border-gray-500/40 text-gray-200'
-                        : 'bg-[#2d2d2d] border-[rgba(255,255,255,0.08)] text-gray-400 hover:border-[rgba(255,255,255,0.15)] hover:text-gray-300'
+                      ? 'bg-gray-500/20 border-gray-500/40 text-gray-200'
+                      : 'bg-[#2d2d2d] border-[rgba(255,255,255,0.08)] text-gray-400 hover:border-[rgba(255,255,255,0.15)] hover:text-gray-300'
                       }`}
                   >
                     {authType.icon}
@@ -707,7 +735,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               />
             </div>
 
-            {/* Разделитель */}
             <div className="h-px bg-[rgba(255,255,255,0.08)]"></div>
 
             {/* Test Script */}
@@ -747,7 +774,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               />
             </div>
 
-            {/* Результаты последнего выполнения */}
             {lastScriptResult && (
               <div className="border border-[rgba(255,255,255,0.08)] rounded-lg overflow-hidden">
                 <button
@@ -758,8 +784,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                     <span className="text-xs font-medium text-gray-300">Результаты выполнения</span>
                     {lastScriptResult.testResults.length > 0 && (
                       <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${lastScriptResult.testResults.some((t) => !t.passed)
-                          ? 'bg-red-500/20 text-red-400'
-                          : 'bg-emerald-500/20 text-emerald-400'
+                        ? 'bg-red-500/20 text-red-400'
+                        : 'bg-emerald-500/20 text-emerald-400'
                         }`}>
                         {lastScriptResult.testResults.filter((t) => t.passed).length}/
                         {lastScriptResult.testResults.length} tests
@@ -793,8 +819,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                           <div
                             key={i}
                             className={`flex items-start gap-2 p-2 rounded text-xs ${test.passed
-                                ? 'bg-emerald-500/10 text-emerald-400'
-                                : 'bg-red-500/10 text-red-400'
+                              ? 'bg-emerald-500/10 text-emerald-400'
+                              : 'bg-red-500/10 text-red-400'
                               }`}
                           >
                             {test.passed ? <CheckCircle size={12} className="shrink-0 mt-0.5" /> : <AlertCircle size={12} className="shrink-0 mt-0.5" />}
@@ -827,10 +853,189 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
           </div>
         )}
 
+        {/* ============ ВКЛАДКА SETTINGS (✅ Задача 2) ============ */}
         {activeTab === 'settings' && (
-          <div className="text-gray-500 text-sm text-center py-8">
-            <p className="mb-2">⚙️ Settings</p>
-            <p>Настройки запроса</p>
+          <div className="flex flex-col h-full min-h-0 space-y-4">
+            {/* Заголовок + кнопка сброса */}
+            <div className="flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="text-sm font-medium text-gray-200">Настройки запроса</h3>
+                <p className="text-[10px] text-gray-500 mt-0.5">
+                  Применяются только к этому запросу
+                </p>
+              </div>
+              <button
+                onClick={handleResetSettings}
+                className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded transition-all"
+                title="Сбросить к значениям по умолчанию"
+              >
+                <RefreshCw size={10} />
+                Сбросить
+              </button>
+            </div>
+
+            {/* Сетка настроек */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+              {/* Follow Redirects */}
+              <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+                <Globe size={16} className="text-indigo-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-gray-200">Follow Redirects</label>
+                    <ToggleSwitch
+                      checked={settings.followRedirects}
+                      onChange={(v) => updateSettings({ followRedirects: v })}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Автоматически следовать за 301, 302, 307, 308
+                  </p>
+                </div>
+              </div>
+
+              {/* Send Cookies */}
+              <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+                <Cookie size={16} className="text-amber-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-gray-200">Send Cookies</label>
+                    <ToggleSwitch
+                      checked={settings.sendCookies}
+                      onChange={(v) => updateSettings({ sendCookies: v })}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Отправлять cookies вместе с запросом
+                  </p>
+                </div>
+              </div>
+
+              {/* SSL Verification */}
+              <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+                <Shield size={16} className="text-emerald-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-gray-200">SSL Verification</label>
+                    <ToggleSwitch
+                      checked={settings.sslVerification}
+                      onChange={(v) => updateSettings({ sslVerification: v })}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    ⚠️ Отключение снижает безопасность
+                  </p>
+                </div>
+              </div>
+
+              {/* Keep-Alive */}
+              <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+                <Zap size={16} className="text-yellow-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-gray-200">Keep-Alive</label>
+                    <ToggleSwitch
+                      checked={settings.keepAlive}
+                      onChange={(v) => updateSettings({ keepAlive: v })}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Использовать keep-alive соединения
+                  </p>
+                </div>
+              </div>
+
+              {/* Disable Cache */}
+              <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+                <Database size={16} className="text-purple-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-gray-200">Disable Cache</label>
+                    <ToggleSwitch
+                      checked={settings.disableCache}
+                      onChange={(v) => updateSettings({ disableCache: v })}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Добавляет заголовок Cache-Control: no-cache
+                  </p>
+                </div>
+              </div>
+
+              {/* Timeout */}
+              <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+                <Clock size={16} className="text-blue-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <label className="text-xs font-medium text-gray-200 block mb-1">
+                    Timeout (мс)
+                  </label>
+                  <input
+                    type="number"
+                    min={1000}
+                    max={300000}
+                    step={1000}
+                    value={settings.timeout}
+                    onChange={(e) => updateSettings({ timeout: Math.max(1000, parseInt(e.target.value) || 30000) })}
+                    className="w-full px-2.5 py-1.5 bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg text-xs text-gray-300 focus:outline-none focus:border-indigo-500/50"
+                  />
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    От 1000 до 300 000 мс (по умолчанию 30000)
+                  </p>
+                </div>
+              </div>
+
+              {/* User-Agent */}
+              <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+                <UserCog size={16} className="text-pink-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <label className="text-xs font-medium text-gray-200 block mb-1">
+                    User-Agent
+                  </label>
+                  <input
+                    type="text"
+                    value={settings.userAgent}
+                    onChange={(e) => updateSettings({ userAgent: e.target.value })}
+                    placeholder="По умолчанию: axios/..."
+                    className="w-full px-2.5 py-1.5 bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg text-xs text-gray-300 focus:outline-none focus:border-indigo-500/50 font-mono"
+                  />
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Кастомный User-Agent (пусто = axios default)
+                  </p>
+                </div>
+              </div>
+
+              {/* Proxy */}
+              <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
+                <Globe size={16} className="text-cyan-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <label className="text-xs font-medium text-gray-200 block mb-1">
+                    Proxy
+                  </label>
+                  <input
+                    type="text"
+                    value={settings.proxy}
+                    onChange={(e) => updateSettings({ proxy: e.target.value })}
+                    placeholder="http://proxy:8080"
+                    className="w-full px-2.5 py-1.5 bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg text-xs text-gray-300 focus:outline-none focus:border-indigo-500/50 font-mono"
+                  />
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Прокси-сервер (пусто = без прокси)
+                  </p>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Информация о текущем конфиге */}
+            <div className="p-3 bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg">
+              <div className="text-[10px] text-gray-500 uppercase tracking-wider font-medium mb-2">
+                Текущий конфиг (JSON)
+              </div>
+              <pre className="text-[10px] text-gray-400 font-mono bg-[#252525] p-2 rounded overflow-x-auto whitespace-pre-wrap">
+                {JSON.stringify(settings, null, 2)}
+              </pre>
+            </div>
+
           </div>
         )}
       </div>
@@ -860,3 +1065,27 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
     </div>
   );
 };
+
+// ============================================================
+// TOGGLE SWITCH
+// ============================================================
+const ToggleSwitch: React.FC<{
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+}> = ({ checked, onChange, disabled = false }) => (
+  <button
+    type="button"
+    onClick={() => !disabled && onChange(!checked)}
+    disabled={disabled}
+    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${checked ? 'bg-indigo-600' : 'bg-gray-600'
+      } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+    role="switch"
+    aria-checked={checked}
+  >
+    <span
+      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${checked ? 'translate-x-4' : 'translate-x-0'
+        }`}
+    />
+  </button>
+);

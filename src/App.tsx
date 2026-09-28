@@ -10,12 +10,14 @@ import { CollectionRunner } from './components/CollectionRunner';
 import { JsonBuilder } from './components/JsonBuilder';
 import { SaveRequestModal } from './components/SaveRequestModal';
 import { NewCollectionModal } from './components/NewCollectionModal';
+import { NewFolderModal } from './components/NewFolderModal';
 import { UpdateNotification } from './components/UpdateNotification';
 import {
   HttpRequest,
   HttpResponse,
   HistoryItem,
   Collection,
+  CollectionFolder,
   Environment,
   KeyValuePair,
   TestResult,
@@ -110,6 +112,127 @@ const removeHeaderCaseInsensitive = (headers: Record<string, string>, name: stri
   });
 };
 
+// ============================================================
+// РЕКУРСИВНЫЕ УТИЛИТЫ ДЛЯ ПАПОК
+// ============================================================
+const findFolderById = (
+  folders: CollectionFolder[],
+  id: string
+): CollectionFolder | null => {
+  for (const f of folders) {
+    if (f.id === id) return f;
+    const found = findFolderById(f.folders, id);
+    if (found) return found;
+  }
+  return null;
+};
+
+const addFolderToTree = (
+  folders: CollectionFolder[],
+  parentId: string | null,
+  newFolder: CollectionFolder
+): CollectionFolder[] => {
+  if (parentId === null) {
+    return [...folders, newFolder];
+  }
+  return folders.map(f => {
+    if (f.id === parentId) {
+      return { ...f, folders: [...f.folders, newFolder] };
+    }
+    return { ...f, folders: addFolderToTree(f.folders, parentId, newFolder) };
+  });
+};
+
+const renameFolderInTree = (
+  folders: CollectionFolder[],
+  folderId: string,
+  newName: string
+): CollectionFolder[] => {
+  return folders.map(f => {
+    if (f.id === folderId) return { ...f, name: newName };
+    return { ...f, folders: renameFolderInTree(f.folders, folderId, newName) };
+  });
+};
+
+const deleteFolderFromTree = (
+  folders: CollectionFolder[],
+  folderId: string
+): CollectionFolder[] => {
+  return folders
+    .filter(f => f.id !== folderId)
+    .map(f => ({ ...f, folders: deleteFolderFromTree(f.folders, folderId) }));
+};
+
+const extractRequestFromTree = (
+  folders: CollectionFolder[],
+  folderId: string,
+  requestId: string
+): { newFolders: CollectionFolder[]; request: HttpRequest | null } => {
+  let extracted: HttpRequest | null = null;
+
+  const walk = (folders: CollectionFolder[]): CollectionFolder[] => {
+    return folders.map(f => {
+      if (f.id === folderId) {
+        const req = f.requests.find(r => r.id === requestId);
+        if (req) {
+          extracted = req;
+          return { ...f, requests: f.requests.filter(r => r.id !== requestId) };
+        }
+      }
+      return { ...f, folders: walk(f.folders) };
+    });
+  };
+
+  return { newFolders: walk(folders), request: extracted };
+};
+
+const insertRequestIntoTree = (
+  folders: CollectionFolder[],
+  targetFolderId: string | null,
+  request: HttpRequest
+): CollectionFolder[] => {
+  if (targetFolderId === null) return folders;
+  return folders.map(f => {
+    if (f.id === targetFolderId) {
+      return { ...f, requests: [...f.requests, request] };
+    }
+    return { ...f, folders: insertRequestIntoTree(f.folders, targetFolderId, request) };
+  });
+};
+
+const mergeFolderTrees = (
+  existing: CollectionFolder[],
+  incoming: CollectionFolder[]
+): CollectionFolder[] => {
+  const map = new Map<string, CollectionFolder>();
+  existing.forEach(f => map.set(f.name.trim().toLowerCase(), f));
+
+  incoming.forEach(f => {
+    const key = f.name.trim().toLowerCase();
+    const prev = map.get(key);
+    if (prev) {
+      const reqMap = new Map<string, HttpRequest>();
+      prev.requests.forEach(r => reqMap.set(r.id, r));
+      f.requests.forEach(r => {
+        if (reqMap.has(r.id)) {
+          reqMap.set(r.id, { ...reqMap.get(r.id)!, ...r });
+        } else {
+          reqMap.set(r.id, { ...r, id: generateId() });
+        }
+      });
+      map.set(key, {
+        ...prev,
+        requests: Array.from(reqMap.values()),
+        folders: mergeFolderTrees(prev.folders, f.folders),
+      });
+    } else {
+      map.set(key, { ...f, id: generateId() });
+    }
+  });
+
+  return Array.from(map.values());
+};
+
 const mergeEnvironments = (
   existing: Environment[],
   incoming: Environment[]
@@ -135,9 +258,8 @@ const mergeCollections = (
   incoming: Collection[]
 ): Collection[] => {
   const map = new Map<string, Collection>();
-  existing.forEach(c => {
-    map.set(c.name.trim().toLowerCase(), c);
-  });
+  existing.forEach(c => map.set(c.name.trim().toLowerCase(), c));
+
   incoming.forEach(c => {
     const key = c.name.trim().toLowerCase();
     const prev = map.get(key);
@@ -151,16 +273,21 @@ const mergeCollections = (
           requestMap.set(r.id, { ...r, id: generateId() });
         }
       });
-      map.set(key, { ...prev, requests: Array.from(requestMap.values()) });
+      map.set(key, {
+        ...prev,
+        requests: Array.from(requestMap.values()),
+        folders: mergeFolderTrees(prev.folders, c.folders),
+      });
     } else {
       map.set(key, { ...c, id: generateId() });
     }
   });
+
   return Array.from(map.values());
 };
 
 // ============================================================
-// КОМПОНЕНТЫ
+// КОМПОНЕНТЫ UI
 // ============================================================
 const ToastContainer = memo(({ toasts, onRemove }: { toasts: Toast[]; onRemove: (id: string) => void }) => (
   <div className="fixed top-16 right-4 z-[300] space-y-2">
@@ -361,6 +488,12 @@ function App() {
   const [showSaveConfirm, setShowSaveConfirm] = useState<{ tabId: string; action: 'close' | 'switch' } | null>(null);
   const [showSaveRequestModal, setShowSaveRequestModal] = useState<{ request: HttpRequest; tabId: string } | null>(null);
   const [showNewCollectionModal, setShowNewCollectionModal] = useState(false);
+  const [showNewFolderModal, setShowNewFolderModal] = useState(false);
+  const [pendingFolderParent, setPendingFolderParent] = useState<{
+    collectionId: string;
+    parentFolderId: string | null;
+    parentName: string;
+  } | null>(null);
   const [requestHeight, setRequestHeight] = useState<number>(50);
   const [isResizing, setIsResizing] = useState(false);
   const [showDbErrorModal, setShowDbErrorModal] = useState(false);
@@ -404,7 +537,14 @@ function App() {
 
           if (!isMounted) return;
 
-          setCollections(cols);
+          // ✅ Миграция: убеждаемся, что у всех коллекций есть поле folders
+          const migratedCols = cols.map(c => ({
+            ...c,
+            folders: Array.isArray(c.folders) ? c.folders : [],
+            requests: Array.isArray(c.requests) ? c.requests : [],
+          }));
+
+          setCollections(migratedCols);
           setHistory(hist);
           setEnvironments(envs);
           setGlobalVariables(globals);
@@ -704,12 +844,39 @@ function App() {
         const baseUrl = url.split('?')[0];
         url = queryString ? `${baseUrl}?${queryString}` : baseUrl;
         const startTime = Date.now();
+
+        const requestSettings = activeTab.request.settings || {};
+
         const config: any = {
           method: processedRequest.method.toLowerCase(),
           url,
           headers,
-          timeout: REQUEST_TIMEOUT,
+          timeout: requestSettings.timeout ?? REQUEST_TIMEOUT,
+          maxRedirects: requestSettings.followRedirects === false ? 0 : 5,
+          withCredentials: requestSettings.sendCookies !== false,
         };
+
+        if (requestSettings.userAgent) {
+          headers['User-Agent'] = requestSettings.userAgent;
+        }
+
+        if (requestSettings.disableCache) {
+          headers['Cache-Control'] = 'no-cache';
+          headers['Pragma'] = 'no-cache';
+        }
+
+        if (requestSettings.proxy) {
+          try {
+            const proxyUrl = new URL(requestSettings.proxy);
+            config.proxy = {
+              protocol: proxyUrl.protocol.replace(':', ''),
+              host: proxyUrl.hostname,
+              port: parseInt(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80),
+            };
+          } catch (e) {
+            console.warn('[Proxy] Неверный URL прокси:', requestSettings.proxy);
+          }
+        }
 
         if (processedRequest.body.type !== 'none' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(processedRequest.method)) {
           switch (processedRequest.body.type) {
@@ -981,45 +1148,70 @@ function App() {
     if (activeTab.collectionId) {
       const collection = collections.find(c => c.id === activeTab.collectionId);
       if (collection) {
-        const existingIndex = collection.requests.findIndex(
-          r => r.id === activeTab.request.id
-        );
+        // Ищем запрос в корне или в папках
+        const findRequestLocation = (): { folderId: string | null; exists: boolean } => {
+          if (collection.requests.some(r => r.id === activeTab.request.id)) {
+            return { folderId: null, exists: true };
+          }
+          const findInFolders = (folders: CollectionFolder[]): string | null => {
+            for (const f of folders) {
+              if (f.requests.some(r => r.id === activeTab.request.id)) return f.id;
+              const found = findInFolders(f.folders);
+              if (found) return found;
+            }
+            return null;
+          };
+          const folderId = findInFolders(collection.folders);
+          return { folderId, exists: folderId !== null };
+        };
 
-        if (existingIndex >= 0) {
-          const updatedRequests = collection.requests.map(r =>
-            r.id === activeTab.request.id ? activeTab.request : r
-          );
-          const updatedCollection = { ...collection, requests: updatedRequests };
-          const updatedCollections = collections.map(c =>
-            c.id === activeTab.collectionId ? updatedCollection : c
-          );
-          setCollections(updatedCollections);
-          await storage.saveCollections(updatedCollections);
-          const newSnapshot = createSnapshot(activeTab.request);
-          setTabs(prevTabs => prevTabs.map(tab =>
-            tab.id === activeTabId ? { ...tab, savedSnapshot: newSnapshot } : tab
-          ));
-          showToast('success', `Запрос "${activeTab.request.name}" обновлён в "${collection.name}"`);
-          return;
+        const location = findRequestLocation();
+
+        let updatedCollection: Collection;
+        if (location.exists) {
+          // Обновить
+          if (location.folderId === null) {
+            updatedCollection = {
+              ...collection,
+              requests: collection.requests.map(r =>
+                r.id === activeTab.request.id ? activeTab.request : r
+              ),
+            };
+          } else {
+            const updateFolder = (folders: CollectionFolder[]): CollectionFolder[] =>
+              folders.map(f => {
+                if (f.id === location.folderId) {
+                  return {
+                    ...f,
+                    requests: f.requests.map(r =>
+                      r.id === activeTab.request.id ? activeTab.request : r
+                    ),
+                  };
+                }
+                return { ...f, folders: updateFolder(f.folders) };
+              });
+            updatedCollection = { ...collection, folders: updateFolder(collection.folders) };
+          }
         } else {
-          const updatedCollection = {
+          // Добавить в корень
+          updatedCollection = {
             ...collection,
             requests: [...collection.requests, activeTab.request],
           };
-          const updatedCollections = collections.map(c =>
-            c.id === activeTab.collectionId ? updatedCollection : c
-          );
-          setCollections(updatedCollections);
-          await storage.saveCollections(updatedCollections);
-          const newSnapshot = createSnapshot(activeTab.request);
-          setTabs(prevTabs => prevTabs.map(tab =>
-            tab.id === activeTabId ? { ...tab, savedSnapshot: newSnapshot } : tab
-          ));
-          showToast('success', `Запрос "${activeTab.request.name}" добавлен в "${collection.name}"`);
-          return;
         }
+
+        const updatedCollections = collections.map(c =>
+          c.id === activeTab.collectionId ? updatedCollection : c
+        );
+        setCollections(updatedCollections);
+        await storage.saveCollections(updatedCollections);
+        const newSnapshot = createSnapshot(activeTab.request);
+        setTabs(prevTabs => prevTabs.map(tab =>
+          tab.id === activeTabId ? { ...tab, savedSnapshot: newSnapshot } : tab
+        ));
+        showToast('success', `Запрос "${activeTab.request.name}" сохранён`);
+        return;
       } else {
-        console.warn('[Save] Коллекция не найдена, collectionId сброшен');
         setTabs(prevTabs => prevTabs.map(tab =>
           tab.id === activeTabId ? { ...tab, collectionId: undefined } : tab
         ));
@@ -1056,15 +1248,17 @@ function App() {
   // ============================================================
   // КОЛЛЕКЦИИ — CRUD
   // ============================================================
-
-  // Открытие модала создания коллекции
   const handleAddCollection = useCallback(() => {
     setShowNewCollectionModal(true);
   }, []);
 
-  // Создание коллекции после подтверждения
   const handleCreateCollection = useCallback(async (name: string) => {
-    const newCollection: Collection = { id: generateId(), name, requests: [] };
+    const newCollection: Collection = {
+      id: generateId(),
+      name,
+      folders: [],
+      requests: [],
+    };
     const newCollections = [...collections, newCollection];
     setCollections(newCollections);
     await storage.saveCollections(newCollections);
@@ -1072,7 +1266,6 @@ function App() {
     showToast('success', `Коллекция "${name}" создана`);
   }, [collections, showToast]);
 
-  // Переименование коллекции
   const handleRenameCollection = useCallback(async (collectionId: string, newName: string) => {
     const updatedCollections = collections.map(c =>
       c.id === collectionId ? { ...c, name: newName } : c
@@ -1082,7 +1275,6 @@ function App() {
     showToast('success', `Коллекция переименована в "${newName}"`);
   }, [collections, showToast]);
 
-  // Удаление коллекции
   const handleDeleteCollection = useCallback(async (collectionId: string) => {
     const updatedCollections = collections.filter(c => c.id !== collectionId);
     setCollections(updatedCollections);
@@ -1113,51 +1305,232 @@ function App() {
   }, [collections, activeTabId, showToast]);
 
   // ============================================================
+  // ПАПКИ — CRUD
+  // ============================================================
+  const handleCreateFolder = useCallback((
+    collectionId: string,
+    parentFolderId: string | null,
+    _defaultName: string
+  ) => {
+    const collection = collections.find(c => c.id === collectionId);
+    if (!collection) return;
+
+    let parentName = collection.name;
+    if (parentFolderId) {
+      const folder = findFolderById(collection.folders, parentFolderId);
+      if (folder) parentName = folder.name;
+    }
+
+    setPendingFolderParent({ collectionId, parentFolderId, parentName });
+    setShowNewFolderModal(true);
+  }, [collections]);
+
+  const handleConfirmCreateFolder = useCallback(async (name: string) => {
+    if (!pendingFolderParent) return;
+    const { collectionId, parentFolderId } = pendingFolderParent;
+
+    const newFolder: CollectionFolder = {
+      id: generateId(),
+      name,
+      folders: [],
+      requests: [],
+    };
+
+    const updatedCollections = collections.map(c => {
+      if (c.id !== collectionId) return c;
+      return { ...c, folders: addFolderToTree(c.folders, parentFolderId, newFolder) };
+    });
+
+    setCollections(updatedCollections);
+    await storage.saveCollections(updatedCollections);
+    setShowNewFolderModal(false);
+    setPendingFolderParent(null);
+    showToast('success', `Папка "${name}" создана`);
+  }, [collections, pendingFolderParent, showToast]);
+
+  const handleRenameFolder = useCallback(async (
+    collectionId: string,
+    folderId: string,
+    newName: string
+  ) => {
+    const updatedCollections = collections.map(c => {
+      if (c.id !== collectionId) return c;
+      return { ...c, folders: renameFolderInTree(c.folders, folderId, newName) };
+    });
+    setCollections(updatedCollections);
+    await storage.saveCollections(updatedCollections);
+    showToast('success', `Папка переименована в "${newName}"`);
+  }, [collections, showToast]);
+
+  const handleDeleteFolder = useCallback(async (
+    collectionId: string,
+    folderId: string
+  ) => {
+    const updatedCollections = collections.map(c => {
+      if (c.id !== collectionId) return c;
+      return { ...c, folders: deleteFolderFromTree(c.folders, folderId) };
+    });
+    setCollections(updatedCollections);
+    await storage.saveCollections(updatedCollections);
+    showToast('success', 'Папка удалена');
+  }, [collections, showToast]);
+
+  // ============================================================
+  // ПЕРЕМЕЩЕНИЕ ЗАПРОСА (Drag & Drop)
+  // ============================================================
+  const handleMoveRequest = useCallback(async (
+    sourceCollectionId: string,
+    sourceFolderId: string | null,
+    requestId: string,
+    targetCollectionId: string,
+    targetFolderId: string | null
+  ) => {
+    const sourceCollection = collections.find(c => c.id === sourceCollectionId);
+    if (!sourceCollection) return;
+
+    let request: HttpRequest | null = null;
+    let updatedSourceCollection: Collection = sourceCollection;
+
+    if (sourceFolderId === null) {
+      request = sourceCollection.requests.find(r => r.id === requestId) || null;
+      if (request) {
+        updatedSourceCollection = {
+          ...sourceCollection,
+          requests: sourceCollection.requests.filter(r => r.id !== requestId),
+        };
+      }
+    } else {
+      const { newFolders, request: extracted } = extractRequestFromTree(
+        sourceCollection.folders, sourceFolderId, requestId
+      );
+      request = extracted;
+      if (request) {
+        updatedSourceCollection = { ...sourceCollection, folders: newFolders };
+      }
+    }
+
+    if (!request) return;
+
+    if (sourceCollectionId === targetCollectionId && sourceFolderId === targetFolderId) {
+      return;
+    }
+
+    const newRequest: HttpRequest = {
+      ...request,
+      id: generateId(),
+    };
+
+    if (sourceCollectionId === targetCollectionId) {
+      const updatedTargetCollection: Collection = {
+        ...updatedSourceCollection,
+        requests: targetFolderId === null
+          ? [...updatedSourceCollection.requests, newRequest]
+          : updatedSourceCollection.requests,
+        folders: targetFolderId === null
+          ? updatedSourceCollection.folders
+          : insertRequestIntoTree(updatedSourceCollection.folders, targetFolderId, newRequest),
+      };
+
+      const updated = collections.map(c =>
+        c.id === sourceCollectionId ? updatedTargetCollection : c
+      );
+      setCollections(updated);
+      await storage.saveCollections(updated);
+      showToast('success', `Запрос "${request.name}" перемещён`);
+      return;
+    }
+
+    const targetCollection = collections.find(c => c.id === targetCollectionId);
+    if (!targetCollection) return;
+
+    const updatedTargetCollection: Collection = {
+      ...targetCollection,
+      requests: targetFolderId === null
+        ? [...targetCollection.requests, newRequest]
+        : targetCollection.requests,
+      folders: targetFolderId === null
+        ? targetCollection.folders
+        : insertRequestIntoTree(targetCollection.folders, targetFolderId, newRequest),
+    };
+
+    const updated = collections.map(c => {
+      if (c.id === sourceCollectionId) return updatedSourceCollection;
+      if (c.id === targetCollectionId) return updatedTargetCollection;
+      return c;
+    });
+
+    setCollections(updated);
+    await storage.saveCollections(updated);
+    showToast('success', `Запрос "${request.name}" перемещён`);
+  }, [collections, showToast]);
+
+  // ============================================================
   // ЗАПРОСЫ В КОЛЛЕКЦИЯХ — CRUD
   // ============================================================
-
-  // Переименование запроса
   const handleRenameRequest = useCallback(async (
     collectionId: string,
     requestId: string,
-    newName: string
+    newName: string,
+    folderId?: string
   ) => {
-    const updatedCollections = collections.map(c =>
-      c.id === collectionId
-        ? {
-          ...c,
-          requests: c.requests.map(r =>
-            r.id === requestId ? { ...r, name: newName } : r
-          ),
-        }
-        : c
-    );
+    const updatedCollections = collections.map(c => {
+      if (c.id !== collectionId) return c;
+
+      if (folderId) {
+        const updateFolder = (folders: CollectionFolder[]): CollectionFolder[] =>
+          folders.map(f => {
+            if (f.id === folderId) {
+              return {
+                ...f,
+                requests: f.requests.map(r =>
+                  r.id === requestId ? { ...r, name: newName } : r
+                ),
+              };
+            }
+            return { ...f, folders: updateFolder(f.folders) };
+          });
+        return { ...c, folders: updateFolder(c.folders) };
+      }
+      return {
+        ...c,
+        requests: c.requests.map(r =>
+          r.id === requestId ? { ...r, name: newName } : r
+        ),
+      };
+    });
+
     setCollections(updatedCollections);
     await storage.saveCollections(updatedCollections);
 
     setTabs(prevTabs => prevTabs.map(tab => {
       if (tab.request.id !== requestId) return tab;
       const updatedRequest = { ...tab.request, name: newName };
-      return {
-        ...tab,
-        request: updatedRequest,
-        savedSnapshot: createSnapshot(updatedRequest),
-      };
+      return { ...tab, request: updatedRequest, savedSnapshot: createSnapshot(updatedRequest) };
     }));
 
     showToast('success', `Запрос переименован в "${newName}"`);
   }, [collections, showToast]);
 
-  // Удаление запроса
   const handleDeleteRequest = useCallback(async (
     collectionId: string,
-    requestId: string
+    requestId: string,
+    folderId?: string
   ) => {
-    const updatedCollections = collections.map(c =>
-      c.id === collectionId
-        ? { ...c, requests: c.requests.filter(r => r.id !== requestId) }
-        : c
-    );
+    const updatedCollections = collections.map(c => {
+      if (c.id !== collectionId) return c;
+      if (folderId) {
+        const updateFolder = (folders: CollectionFolder[]): CollectionFolder[] =>
+          folders.map(f => {
+            if (f.id === folderId) {
+              return { ...f, requests: f.requests.filter(r => r.id !== requestId) };
+            }
+            return { ...f, folders: updateFolder(f.folders) };
+          });
+        return { ...c, folders: updateFolder(c.folders) };
+      }
+      return { ...c, requests: c.requests.filter(r => r.id !== requestId) };
+    });
+
     setCollections(updatedCollections);
     await storage.saveCollections(updatedCollections);
 
@@ -1168,9 +1541,7 @@ function App() {
         const newTab: Tab = {
           id: generateId(),
           request: defaultRequest,
-          response: null,
-          loading: false,
-          error: null,
+          response: null, loading: false, error: null,
           savedSnapshot: createSnapshot(defaultRequest),
         };
         setActiveTabId(newTab.id);
@@ -1185,15 +1556,20 @@ function App() {
     showToast('success', 'Запрос удалён');
   }, [collections, activeTabId, showToast]);
 
-  // Дублирование запроса
   const handleDuplicateRequest = useCallback(async (
     collectionId: string,
-    requestId: string
+    requestId: string,
+    folderId?: string
   ) => {
     const collection = collections.find(c => c.id === collectionId);
     if (!collection) return;
 
-    const original = collection.requests.find(r => r.id === requestId);
+    let original: HttpRequest | undefined;
+    if (folderId) {
+      original = findFolderById(collection.folders, folderId)?.requests.find(r => r.id === requestId);
+    } else {
+      original = collection.requests.find(r => r.id === requestId);
+    }
     if (!original) return;
 
     const duplicate: HttpRequest = {
@@ -1202,21 +1578,29 @@ function App() {
       name: `${original.name} (copy)`,
     };
 
-    const updatedCollections = collections.map(c =>
-      c.id === collectionId
-        ? { ...c, requests: [...c.requests, duplicate] }
-        : c
-    );
+    const updatedCollections = collections.map(c => {
+      if (c.id !== collectionId) return c;
+      if (folderId) {
+        const updateFolder = (folders: CollectionFolder[]): CollectionFolder[] =>
+          folders.map(f => {
+            if (f.id === folderId) {
+              return { ...f, requests: [...f.requests, duplicate] };
+            }
+            return { ...f, folders: updateFolder(f.folders) };
+          });
+        return { ...c, folders: updateFolder(c.folders) };
+      }
+      return { ...c, requests: [...c.requests, duplicate] };
+    });
+
     setCollections(updatedCollections);
     await storage.saveCollections(updatedCollections);
-
     showToast('success', `Запрос "${duplicate.name}" создан`);
   }, [collections, showToast]);
 
   // ============================================================
-  // ОСТАЛЬНЫЕ ОБРАБОТЧИКИ
+  // ИМПОРТ / ЭКСПОРТ
   // ============================================================
-
   const handleImportCollections = useCallback(async (importedCollections: Collection[]) => {
     const updated = mergeCollections(collections, importedCollections);
     setCollections(updated);
@@ -1238,9 +1622,22 @@ function App() {
     showToast('success', 'Коллекции экспортированы');
   }, [collections, showToast]);
 
-  const handleSelectRequest = useCallback((collectionId: string, requestId: string) => {
+  const handleSelectRequest = useCallback((
+    collectionId: string,
+    requestId: string,
+    folderId?: string
+  ) => {
     const collection = collections.find(c => c.id === collectionId);
-    const request = collection?.requests.find(r => r.id === requestId);
+    if (!collection) return;
+
+    let request: HttpRequest | undefined;
+    if (folderId) {
+      const folder = findFolderById(collection.folders, folderId);
+      request = folder?.requests.find(r => r.id === requestId);
+    } else {
+      request = collection.requests.find(r => r.id === requestId);
+    }
+
     if (!request) {
       showToast('error', 'Запрос не найден в коллекции');
       return;
@@ -1251,8 +1648,8 @@ function App() {
         tab.id === activeTabId
           ? {
             ...tab,
-            request: { ...request },
-            savedSnapshot: createSnapshot(request),
+            request: { ...request! },
+            savedSnapshot: createSnapshot(request!),
             collectionId,
             response: null,
             error: null,
@@ -1400,31 +1797,78 @@ function App() {
   const handleSaveRequestToCollection = useCallback(async (
     collectionId: string,
     requestName: string,
-    request: HttpRequest
+    request: HttpRequest,
+    folderId?: string | null
   ) => {
     try {
       const collection = collections.find(c => c.id === collectionId);
       if (!collection) throw new Error('Коллекция не найдена');
 
-      const existingIndex = collection.requests.findIndex(r => r.id === request.id);
+      let existingRequest: HttpRequest | undefined;
+      let existingFolderId: string | null = null;
+
+      existingRequest = collection.requests.find(r => r.id === request.id);
+      if (!existingRequest) {
+        const findInFolders = (folders: CollectionFolder[]): { req: HttpRequest; folderId: string } | null => {
+          for (const f of folders) {
+            const req = f.requests.find(r => r.id === request.id);
+            if (req) return { req, folderId: f.id };
+            const found = findInFolders(f.folders);
+            if (found) return found;
+          }
+          return null;
+        };
+        const found = findInFolders(collection.folders);
+        if (found) {
+          existingRequest = found.req;
+          existingFolderId = found.folderId;
+        }
+      }
 
       let updatedCollection: Collection;
 
-      if (existingIndex >= 0) {
-        const updatedRequests = collection.requests.map((r, i) =>
-          i === existingIndex ? { ...request, name: requestName } : r
-        );
-        updatedCollection = { ...collection, requests: updatedRequests };
+      if (existingRequest) {
+        const updatedRequest = { ...request, name: requestName };
+        if (existingFolderId === null) {
+          updatedCollection = {
+            ...collection,
+            requests: collection.requests.map(r =>
+              r.id === request.id ? updatedRequest : r
+            ),
+          };
+        } else {
+          const updateFolder = (folders: CollectionFolder[]): CollectionFolder[] =>
+            folders.map(f => {
+              if (f.id === existingFolderId) {
+                return {
+                  ...f,
+                  requests: f.requests.map(r =>
+                    r.id === request.id ? updatedRequest : r
+                  ),
+                };
+              }
+              return { ...f, folders: updateFolder(f.folders) };
+            });
+          updatedCollection = { ...collection, folders: updateFolder(collection.folders) };
+        }
       } else {
         const newRequest: HttpRequest = {
           ...request,
           id: generateId(),
           name: requestName,
         };
-        updatedCollection = {
-          ...collection,
-          requests: [...collection.requests, newRequest],
-        };
+
+        if (!folderId) {
+          updatedCollection = {
+            ...collection,
+            requests: [...collection.requests, newRequest],
+          };
+        } else {
+          updatedCollection = {
+            ...collection,
+            folders: insertRequestIntoTree(collection.folders, folderId, newRequest),
+          };
+        }
       }
 
       const updatedCollections = collections.map(c =>
@@ -1433,9 +1877,9 @@ function App() {
       setCollections(updatedCollections);
       await storage.saveCollections(updatedCollections);
 
-      const savedRequest = existingIndex >= 0
+      const savedRequest = existingRequest
         ? { ...request, name: requestName }
-        : updatedCollection.requests[updatedCollection.requests.length - 1];
+        : { ...request, id: generateId(), name: requestName };
 
       setTabs(prevTabs => prevTabs.map(tab =>
         tab.id === activeTabId ? {
@@ -1446,7 +1890,7 @@ function App() {
         } : tab
       ));
       setShowSaveRequestModal(null);
-      showToast('success', `Запрос "${requestName}" сохранён в "${collection.name}"`);
+      showToast('success', `Запрос "${requestName}" сохранён`);
     } catch (error: any) {
       showToast('error', `Ошибка сохранения: ${error.message}`);
     }
@@ -1462,6 +1906,7 @@ function App() {
       const newCollection: Collection = {
         id: generateId(),
         name: collectionName,
+        folders: [],
         requests: [newRequest],
       };
       const updatedCollections = [...collections, newCollection];
@@ -1588,6 +2033,10 @@ function App() {
           onDuplicateRequest={handleDuplicateRequest}
           onRenameCollection={handleRenameCollection}
           onDeleteCollection={handleDeleteCollection}
+          onCreateFolder={handleCreateFolder}
+          onRenameFolder={handleRenameFolder}
+          onDeleteFolder={handleDeleteFolder}
+          onMoveRequest={handleMoveRequest}
         />
         <div className="flex-1 flex flex-col overflow-hidden">
           <Tabs
@@ -1680,6 +2129,16 @@ function App() {
         <NewCollectionModal
           onConfirm={handleCreateCollection}
           onClose={() => setShowNewCollectionModal(false)}
+        />
+      )}
+      {showNewFolderModal && pendingFolderParent && (
+        <NewFolderModal
+          parentName={pendingFolderParent.parentName}
+          onConfirm={handleConfirmCreateFolder}
+          onClose={() => {
+            setShowNewFolderModal(false);
+            setPendingFolderParent(null);
+          }}
         />
       )}
       {showSaveConfirm && (
