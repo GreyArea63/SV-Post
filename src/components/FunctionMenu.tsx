@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Download, Upload, X, Settings, Trash2, Database, FileJson, Menu } from 'lucide-react';
+import { Download, Upload, X, Settings, Trash2, Database, FileJson, Menu, Terminal } from 'lucide-react';
 import { Collection } from '../types';
 import {
   detectPostmanFileType,
@@ -15,6 +15,8 @@ interface FunctionMenuProps {
   onOpenJsonBuilder: () => void;
   onClearHistory?: () => void;
   onClearAll?: () => void;
+  /** ✅ Новый проп — открыть модал импорта из cURL */
+  onImportCurl: () => void;
 }
 
 interface Notification {
@@ -39,6 +41,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
   onOpenJsonBuilder,
   onClearHistory,
   onClearAll,
+  onImportCurl,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [notification, setNotification] = useState<Notification | null>(null);
@@ -75,10 +78,6 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     fileInputRef.current?.click();
   };
 
-  /**
-   * ✅ ОБНОВЛЕНО: используем convertPostmanCollectionToApp из helpers.ts,
-   * который поддерживает вложенные папки Postman.
-   */
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -88,23 +87,18 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       const data = JSON.parse(text);
       let importedCollections: Collection[] = [];
 
-      // Определяем тип файла
       const fileType = detectPostmanFileType(data);
 
       if (fileType === 'collection') {
-        // ✅ Postman Collection → конвертируем с папками
         importedCollections = [convertPostmanCollectionToApp(data)];
       } else if (data.collections && Array.isArray(data.collections)) {
-        // SV-Post экспорт
         importedCollections = data.collections;
       } else if (Array.isArray(data)) {
-        // Массив коллекций
         importedCollections = data;
       } else {
         throw new Error('Неверный формат файла. Ожидается Postman Collection или SV-Post export.');
       }
 
-      // ✅ Валидация коллекций + миграция (добавляем folders: [], если нет)
       const validCollections = importedCollections
         .filter((c: any) => c && typeof c === 'object' && c.id && c.name)
         .map((c: any) => ({
@@ -173,6 +167,17 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       ]
     },
     {
+      title: 'Запрос',
+      items: [
+        {
+          icon: <Terminal size={14} />,
+          label: 'Импорт из cURL',
+          description: 'Вставить curl-команду',
+          onClick: () => { setIsOpen(false); onImportCurl(); }
+        },
+      ]
+    },
+    {
       title: 'Runner',
       items: [
         { icon: <FileJson size={14} />, label: 'Собрать JSON', description: 'Данные для Runner', onClick: () => { setIsOpen(false); onOpenJsonBuilder(); } },
@@ -204,15 +209,15 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
         },
       ]
     }
-  ], [collections.length, handleImportClick, handleExportClick, handleShowStorageInfo, handleClearHistory, handleClearAll, onOpenJsonBuilder, onOpenEnvManager]);
+  ], [collections.length, handleImportClick, handleExportClick, handleShowStorageInfo, handleClearHistory, handleClearAll, onOpenJsonBuilder, onOpenEnvManager, onImportCurl]);
 
   return (
     <div className="relative" ref={menuRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
         className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-xs transition-all ${isOpen
-            ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
-            : 'bg-[#2d2d2d] hover:bg-[#3d3d3d] text-gray-300 border border-[rgba(255,255,255,0.08)]'
+          ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
+          : 'bg-[#2d2d2d] hover:bg-[#3d3d3d] text-gray-300 border border-[rgba(255,255,255,0.08)]'
           }`}
         aria-label="Открыть меню функций"
       >
@@ -233,10 +238,10 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
                   onClick={item.onClick}
                   disabled={item.disabled}
                   className={`w-full flex items-center gap-2 px-3 py-2 transition-all text-left ${item.disabled
-                      ? 'opacity-40 cursor-not-allowed'
-                      : item.danger
-                        ? 'hover:bg-red-500/10 text-red-400'
-                        : 'hover:bg-white/5 text-gray-300'
+                    ? 'opacity-40 cursor-not-allowed'
+                    : item.danger
+                      ? 'hover:bg-red-500/10 text-red-400'
+                      : 'hover:bg-white/5 text-gray-300'
                     }`}
                 >
                   <div className={`flex-shrink-0 ${item.danger ? 'text-red-400' : 'text-indigo-400'}`}>
@@ -265,8 +270,8 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
 
       {notification && (
         <div className={`fixed top-16 left-1/2 transform -translate-x-1/2 px-4 py-2 rounded-lg shadow-lg z-[100] flex items-center gap-2 animate-fade-in bg-[#1e1e1e] border ${notification.type === 'success' ? 'border-emerald-500/30 text-emerald-400' :
-            notification.type === 'error' ? 'border-red-500/30 text-red-400' :
-              'border-blue-500/30 text-blue-400'
+          notification.type === 'error' ? 'border-red-500/30 text-red-400' :
+            'border-blue-500/30 text-blue-400'
           }`}>
           <span className="text-xs">{notification.message}</span>
           <button onClick={() => setNotification(null)} className="hover:opacity-70" aria-label="Закрыть уведомление">

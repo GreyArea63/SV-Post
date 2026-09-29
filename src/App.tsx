@@ -12,6 +12,7 @@ import { SaveRequestModal } from './components/SaveRequestModal';
 import { NewCollectionModal } from './components/NewCollectionModal';
 import { NewFolderModal } from './components/NewFolderModal';
 import { UpdateNotification } from './components/UpdateNotification';
+import { ImportCurlModal } from './components/ImportCurlModal';
 import {
   HttpRequest,
   HttpResponse,
@@ -405,6 +406,7 @@ const HeaderBar = memo(({
   onOpenJsonBuilder,
   onClearHistory,
   onClearAll,
+  onImportCurl,
 }: {
   activeEnvId: string | null;
   environments: Environment[];
@@ -416,6 +418,7 @@ const HeaderBar = memo(({
   onOpenJsonBuilder: () => void;
   onClearHistory: () => void;
   onClearAll: () => void;
+  onImportCurl: () => void;
 }) => (
   <div className="h-8 bg-[#1e1e1e] border-b border-[rgba(255,255,255,0.08)] flex items-center px-3 gap-2 shrink-0">
     <FunctionMenu
@@ -426,6 +429,7 @@ const HeaderBar = memo(({
       onOpenJsonBuilder={onOpenJsonBuilder}
       onClearHistory={onClearHistory}
       onClearAll={onClearAll}
+      onImportCurl={onImportCurl}
     />
     <div className="h-4 w-px bg-[rgba(255,255,255,0.1)]" />
     <h1 className="text-sm font-bold text-gray-200">SV-Post</h1>
@@ -483,6 +487,7 @@ function App() {
   const [activeEnvId, setActiveEnvId] = useState<string | null>(null);
   const [showEnvManager, setShowEnvManager] = useState(false);
   const [showJsonBuilder, setShowJsonBuilder] = useState(false);
+  const [showImportCurl, setShowImportCurl] = useState(false);
   const [runningRequest, setRunningRequest] = useState<{ request: HttpRequest; collectionName: string } | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showSaveConfirm, setShowSaveConfirm] = useState<{ tabId: string; action: 'close' | 'switch' } | null>(null);
@@ -537,7 +542,6 @@ function App() {
 
           if (!isMounted) return;
 
-          // ✅ Миграция: убеждаемся, что у всех коллекций есть поле folders
           const migratedCols = cols.map(c => ({
             ...c,
             folders: Array.isArray(c.folders) ? c.folders : [],
@@ -878,18 +882,25 @@ function App() {
           }
         }
 
+        const hasManualContentType = Object.keys(headers).some(
+          k => k.toLowerCase() === 'content-type'
+        );
+
         if (processedRequest.body.type !== 'none' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(processedRequest.method)) {
           switch (processedRequest.body.type) {
             case 'json':
             case 'raw':
               try {
                 config.data = JSON.parse(processedRequest.body.content);
-                headers['Content-Type'] = 'application/json';
               } catch {
                 config.data = processedRequest.body.content;
-                headers['Content-Type'] = 'text/plain';
+              }
+              if (!hasManualContentType) {
+                removeHeaderCaseInsensitive(headers, 'Content-Type');
+                headers['Content-Type'] = 'application/json';
               }
               break;
+
             case 'x-www-form-urlencoded':
               if (processedRequest.body.form && processedRequest.body.form.length > 0) {
                 const formData = new URLSearchParams();
@@ -897,12 +908,15 @@ function App() {
                   if (field.enabled && field.key) formData.append(field.key, field.value);
                 });
                 config.data = formData.toString();
-                headers['Content-Type'] = 'application/x-www-form-urlencoded';
               } else {
                 config.data = processedRequest.body.content;
+              }
+              if (!hasManualContentType) {
+                removeHeaderCaseInsensitive(headers, 'Content-Type');
                 headers['Content-Type'] = 'application/x-www-form-urlencoded';
               }
               break;
+
             case 'form-data':
               if (processedRequest.body.form && processedRequest.body.form.length > 0) {
                 const formData = new FormData();
@@ -910,25 +924,34 @@ function App() {
                   if (field.enabled && field.key) formData.append(field.key, field.value);
                 });
                 config.data = formData;
-                delete headers['Content-Type'];
+                removeHeaderCaseInsensitive(headers, 'Content-Type');
               }
               break;
+
             case 'graphql':
               try {
                 const graphqlData = JSON.parse(processedRequest.body.content);
                 config.data = { query: graphqlData.query || '', variables: graphqlData.variables || {}, operationName: graphqlData.operationName || null };
-                headers['Content-Type'] = 'application/json';
               } catch {
                 config.data = { query: processedRequest.body.content };
+              }
+              if (!hasManualContentType) {
+                removeHeaderCaseInsensitive(headers, 'Content-Type');
                 headers['Content-Type'] = 'application/json';
               }
               break;
+
             case 'binary':
               config.data = processedRequest.body.content;
-              headers['Content-Type'] = 'application/octet-stream';
+              if (!hasManualContentType) {
+                removeHeaderCaseInsensitive(headers, 'Content-Type');
+                headers['Content-Type'] = 'application/octet-stream';
+              }
               break;
           }
         }
+
+        config.headers = headers;
 
         const axiosResponse = await axios(config);
         const endTime = Date.now();
@@ -1148,7 +1171,6 @@ function App() {
     if (activeTab.collectionId) {
       const collection = collections.find(c => c.id === activeTab.collectionId);
       if (collection) {
-        // Ищем запрос в корне или в папках
         const findRequestLocation = (): { folderId: string | null; exists: boolean } => {
           if (collection.requests.some(r => r.id === activeTab.request.id)) {
             return { folderId: null, exists: true };
@@ -1169,7 +1191,6 @@ function App() {
 
         let updatedCollection: Collection;
         if (location.exists) {
-          // Обновить
           if (location.folderId === null) {
             updatedCollection = {
               ...collection,
@@ -1193,7 +1214,6 @@ function App() {
             updatedCollection = { ...collection, folders: updateFolder(collection.folders) };
           }
         } else {
-          // Добавить в корень
           updatedCollection = {
             ...collection,
             requests: [...collection.requests, activeTab.request],
@@ -1953,6 +1973,46 @@ function App() {
     showToast('success', `Переменная ${key} обновлена`);
   }, [globalVariables, environments, activeEnvId, showToast]);
 
+  // ✅ НОВЫЙ КОЛБЭК: импорт из cURL
+  const handleImportCurl = useCallback((request: HttpRequest) => {
+    setShowImportCurl(false);
+
+    if (activeTab && isTabEmpty(activeTab)) {
+      // Загружаем в текущую пустую вкладку
+      setTabs(prevTabs => prevTabs.map(tab =>
+        tab.id === activeTabId
+          ? {
+            ...tab,
+            request,
+            savedSnapshot: createSnapshot(request),
+            response: null,
+            error: null,
+            collectionId: undefined,
+          }
+          : tab
+      ));
+      showToast('success', `Импортирован запрос: ${request.method} ${request.url}`);
+      return;
+    }
+
+    if (tabs.length >= MAX_TABS) {
+      showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
+      return;
+    }
+
+    const newTab: Tab = {
+      id: generateId(),
+      request,
+      response: null,
+      loading: false,
+      error: null,
+      savedSnapshot: createSnapshot(request),
+    };
+    setTabs(prevTabs => [...prevTabs, newTab]);
+    setActiveTabId(newTab.id);
+    showToast('success', `Импортирован запрос: ${request.method} ${request.url}`);
+  }, [activeTab, activeTabId, tabs.length, showToast]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
@@ -2017,6 +2077,7 @@ function App() {
         onOpenJsonBuilder={() => setShowJsonBuilder(true)}
         onClearHistory={handleClearHistory}
         onClearAll={handleClearAll}
+        onImportCurl={() => setShowImportCurl(true)}
       />
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
@@ -2139,6 +2200,12 @@ function App() {
             setShowNewFolderModal(false);
             setPendingFolderParent(null);
           }}
+        />
+      )}
+      {showImportCurl && (
+        <ImportCurlModal
+          onImport={handleImportCurl}
+          onClose={() => setShowImportCurl(false)}
         />
       )}
       {showSaveConfirm && (

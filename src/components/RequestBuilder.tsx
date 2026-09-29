@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import {
   Send, AlertCircle, CheckCircle, Save, Share2, Code, Database, Key, Lock, User,
-  RefreshCw, Play, Clock, Shield, Cookie, Globe, Zap, UserCog
+  RefreshCw, Play, Clock, Shield, Cookie, Globe, Zap, UserCog, Copy, Check, Terminal
 } from 'lucide-react';
 import {
   HttpRequest, KeyValuePair, RequestBody, Environment, Collection, RequestAuth,
@@ -13,6 +13,7 @@ import { JsonEditor } from './JsonEditor';
 import { SchemaEditor } from './SchemaEditor';
 import { KeyValueEditor } from './KeyValueEditor';
 import { VariableTooltip } from './VariableTooltip';
+import { generateCurl } from '../utils/curlGenerator';
 import {
   GENERIC_JSON_SCHEMA,
   M30_PRODUCT_SCHEMA,
@@ -57,7 +58,6 @@ const AUTH_TYPES = [
   { value: 'oauth2', label: 'OAuth 2.0', icon: <RefreshCw size={14} /> },
 ] as const;
 
-// ✅ Значения по умолчанию для настроек
 const DEFAULT_SETTINGS: Required<RequestSettings> = {
   followRedirects: true,
   timeout: 30000,
@@ -93,11 +93,11 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   const [selectedVariable, setSelectedVariable] = useState<string | null>(null);
   const [runningScript, setRunningScript] = useState<'preRequest' | 'test' | null>(null);
   const [showScriptResults, setShowScriptResults] = useState(false);
+  const [curlCopied, setCurlCopied] = useState(false);
 
   const activeEnv = environments.find(e => e.id === activeEnvId);
   const envVariables = activeEnv?.variables || [];
 
-  // ✅ Настройки с fallback к дефолтным значениям
   const settings = useMemo<Required<RequestSettings>>(() => ({
     ...DEFAULT_SETTINGS,
     ...(request.settings || {}),
@@ -316,6 +316,24 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
     updateSettings(DEFAULT_SETTINGS);
   }, [updateSettings]);
 
+  // ✅ Копировать как cURL
+  const handleCopyCurl = useCallback(async () => {
+    try {
+      const curl = generateCurl(request, {
+        format: 'pretty',
+        environment: activeEnv,
+        globals: globalVariables,
+        resolveVariables: true,
+        includeLocation: true,
+      });
+      await navigator.clipboard.writeText(curl);
+      setCurlCopied(true);
+      setTimeout(() => setCurlCopied(false), 1500);
+    } catch (e: any) {
+      onError('Не удалось скопировать cURL: ' + (e.message || ''));
+    }
+  }, [request, activeEnv, globalVariables, onError]);
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Top Bar */}
@@ -332,6 +350,18 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
           )}
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopyCurl}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-all ${curlCopied
+                ? 'text-emerald-400 bg-emerald-500/10'
+                : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+              }`}
+            title="Копировать как cURL"
+            aria-label="Копировать как cURL"
+          >
+            {curlCopied ? <Check size={14} /> : <Terminal size={14} />}
+            <span>{curlCopied ? 'Copied!' : 'cURL'}</span>
+          </button>
           <button
             onClick={onSaveRequest}
             className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg text-sm transition-all"
@@ -853,10 +883,9 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
           </div>
         )}
 
-        {/* ============ ВКЛАДКА SETTINGS (✅ Задача 2) ============ */}
+        {/* ============ ВКЛАДКА SETTINGS ============ */}
         {activeTab === 'settings' && (
           <div className="flex flex-col h-full min-h-0 space-y-4">
-            {/* Заголовок + кнопка сброса */}
             <div className="flex items-center justify-between shrink-0">
               <div>
                 <h3 className="text-sm font-medium text-gray-200">Настройки запроса</h3>
@@ -874,10 +903,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               </button>
             </div>
 
-            {/* Сетка настроек */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-              {/* Follow Redirects */}
               <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
                 <Globe size={16} className="text-indigo-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -894,7 +920,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                 </div>
               </div>
 
-              {/* Send Cookies */}
               <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
                 <Cookie size={16} className="text-amber-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -911,7 +936,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                 </div>
               </div>
 
-              {/* SSL Verification */}
               <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
                 <Shield size={16} className="text-emerald-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -928,7 +952,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                 </div>
               </div>
 
-              {/* Keep-Alive */}
               <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
                 <Zap size={16} className="text-yellow-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -945,7 +968,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                 </div>
               </div>
 
-              {/* Disable Cache */}
               <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
                 <Database size={16} className="text-purple-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -962,7 +984,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                 </div>
               </div>
 
-              {/* Timeout */}
               <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
                 <Clock size={16} className="text-blue-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -984,7 +1005,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                 </div>
               </div>
 
-              {/* User-Agent */}
               <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
                 <UserCog size={16} className="text-pink-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -1004,7 +1024,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                 </div>
               </div>
 
-              {/* Proxy */}
               <div className="flex items-start gap-3 p-3 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg">
                 <Globe size={16} className="text-cyan-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -1023,10 +1042,8 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                   </p>
                 </div>
               </div>
-
             </div>
 
-            {/* Информация о текущем конфиге */}
             <div className="p-3 bg-[#1e1e1e] border border-[rgba(255,255,255,0.08)] rounded-lg">
               <div className="text-[10px] text-gray-500 uppercase tracking-wider font-medium mb-2">
                 Текущий конфиг (JSON)
@@ -1035,7 +1052,6 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
                 {JSON.stringify(settings, null, 2)}
               </pre>
             </div>
-
           </div>
         )}
       </div>
