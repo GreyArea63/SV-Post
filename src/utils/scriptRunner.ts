@@ -8,6 +8,9 @@ import {
 } from '../types';
 import { generateId } from './helpers';
 
+// ✅ КРИТИЧНО: конструктор асинхронных функций — поддерживает await
+const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
+
 /**
  * ScriptRunner — безопасное выполнение Pre-request Scripts и Tests
  * в изолированной песочнице с Postman-совместимым API (pm.*)
@@ -28,120 +31,69 @@ export class ScriptRunner {
     this.globals = { ...context.globals };
   }
 
-  /**
-   * Создаёт объект pm с полным Postman-совместимым API
-   */
   private createPmObject(response?: HttpResponse) {
     const self = this;
-
     const responseBody = response ? response.data : null;
 
     const createExpect = (value: any) => ({
       toBe: (expected: any) => {
-        if (value !== expected) {
-          throw new Error(
-            `Expected ${JSON.stringify(expected)} but got ${JSON.stringify(value)}`
-          );
-        }
+        if (value !== expected) throw new Error(`Expected ${JSON.stringify(expected)} but got ${JSON.stringify(value)}`);
       },
       toEqual: (expected: any) => {
-        if (JSON.stringify(value) !== JSON.stringify(expected)) {
-          throw new Error(
-            `Expected ${JSON.stringify(expected)} but got ${JSON.stringify(value)}`
-          );
-        }
+        if (JSON.stringify(value) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)} but got ${JSON.stringify(value)}`);
       },
-      toBeTruthy: () => {
-        if (!value) throw new Error(`Expected truthy value but got ${JSON.stringify(value)}`);
-      },
-      toBeFalsy: () => {
-        if (value) throw new Error(`Expected falsy value but got ${JSON.stringify(value)}`);
-      },
-      toBeDefined: () => {
-        if (value === undefined) throw new Error('Expected defined value but got undefined');
-      },
-      toBeUndefined: () => {
-        if (value !== undefined)
-          throw new Error(`Expected undefined but got ${JSON.stringify(value)}`);
-      },
-      toBeNull: () => {
-        if (value !== null) throw new Error(`Expected null but got ${JSON.stringify(value)}`);
-      },
+      toBeTruthy: () => { if (!value) throw new Error(`Expected truthy value but got ${JSON.stringify(value)}`); },
+      toBeFalsy: () => { if (value) throw new Error(`Expected falsy value but got ${JSON.stringify(value)}`); },
+      toBeDefined: () => { if (value === undefined) throw new Error('Expected defined value but got undefined'); },
+      toBeUndefined: () => { if (value !== undefined) throw new Error(`Expected undefined but got ${JSON.stringify(value)}`); },
+      toBeNull: () => { if (value !== null) throw new Error(`Expected null but got ${JSON.stringify(value)}`); },
       toBeGreaterThan: (expected: number) => {
-        if (typeof value !== 'number' || value <= expected) {
-          throw new Error(`Expected ${value} to be greater than ${expected}`);
-        }
+        if (typeof value !== 'number' || value <= expected) throw new Error(`Expected ${value} to be greater than ${expected}`);
       },
       toBeLessThan: (expected: number) => {
-        if (typeof value !== 'number' || value >= expected) {
-          throw new Error(`Expected ${value} to be less than ${expected}`);
-        }
+        if (typeof value !== 'number' || value >= expected) throw new Error(`Expected ${value} to be less than ${expected}`);
       },
       toBeGreaterThanOrEqual: (expected: number) => {
-        if (typeof value !== 'number' || value < expected) {
-          throw new Error(`Expected ${value} to be >= ${expected}`);
-        }
+        if (typeof value !== 'number' || value < expected) throw new Error(`Expected ${value} to be >= ${expected}`);
       },
       toBeLessThanOrEqual: (expected: number) => {
-        if (typeof value !== 'number' || value > expected) {
-          throw new Error(`Expected ${value} to be <= ${expected}`);
-        }
+        if (typeof value !== 'number' || value > expected) throw new Error(`Expected ${value} to be <= ${expected}`);
       },
       toInclude: (expected: any) => {
         if (typeof value === 'string') {
-          if (!value.includes(expected)) {
-            throw new Error(`Expected "${value}" to include "${expected}"`);
-          }
+          if (!value.includes(expected)) throw new Error(`Expected "${value}" to include "${expected}"`);
         } else if (Array.isArray(value)) {
-          if (!value.includes(expected)) {
-            throw new Error(`Expected array to include ${JSON.stringify(expected)}`);
-          }
+          if (!value.includes(expected)) throw new Error(`Expected array to include ${JSON.stringify(expected)}`);
         } else {
           throw new Error('toInclude can only be used with strings and arrays');
         }
       },
       toHaveProperty: (key: string) => {
-        if (typeof value !== 'object' || value === null || !(key in value)) {
-          throw new Error(`Expected object to have property "${key}"`);
-        }
+        if (typeof value !== 'object' || value === null || !(key in value)) throw new Error(`Expected object to have property "${key}"`);
       },
       toMatch: (pattern: string | RegExp) => {
         const regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
-        if (typeof value !== 'string' || !regex.test(value)) {
-          throw new Error(`Expected "${value}" to match ${pattern}`);
-        }
+        if (typeof value !== 'string' || !regex.test(value)) throw new Error(`Expected "${value}" to match ${pattern}`);
       },
       toHaveLength: (length: number) => {
-        if (value === null || value === undefined || value.length !== length) {
-          throw new Error(`Expected length ${length} but got ${value?.length}`);
-        }
+        if (value === null || value === undefined || value.length !== length) throw new Error(`Expected length ${length} but got ${value?.length}`);
       },
       toBeOneOf: (options: any[]) => {
-        if (!options.includes(value)) {
-          throw new Error(
-            `Expected ${JSON.stringify(value)} to be one of ${JSON.stringify(options)}`
-          );
-        }
+        if (!options.includes(value)) throw new Error(`Expected ${JSON.stringify(value)} to be one of ${JSON.stringify(options)}`);
       },
       to: {
         have: {
           property: (key: string) => {
-            if (typeof value !== 'object' || value === null || !(key in value)) {
-              throw new Error(`Expected object to have property "${key}"`);
-            }
+            if (typeof value !== 'object' || value === null || !(key in value)) throw new Error(`Expected object to have property "${key}"`);
           },
           length: (length: number) => {
-            if (value?.length !== length) {
-              throw new Error(`Expected length ${length} but got ${value?.length}`);
-            }
+            if (value?.length !== length) throw new Error(`Expected length ${length} but got ${value?.length}`);
           },
         },
         be: {
           a: (type: string) => {
             const actualType = Array.isArray(value) ? 'array' : typeof value;
-            if (actualType !== type) {
-              throw new Error(`Expected type "${type}" but got "${actualType}"`);
-            }
+            if (actualType !== type) throw new Error(`Expected type "${type}" but got "${actualType}"`);
           },
         },
       },
@@ -150,32 +102,20 @@ export class ScriptRunner {
     const responseToHave = response
       ? {
         status: (code: number) => {
-          if (response.status !== code) {
-            throw new Error(`Expected status ${code} but got ${response.status}`);
-          }
+          if (response.status !== code) throw new Error(`Expected status ${code} but got ${response.status}`);
         },
         header: (key: string) => {
           const headers = response.headers || {};
-          const found = Object.keys(headers).some(
-            (k) => k.toLowerCase() === key.toLowerCase()
-          );
-          if (!found) {
-            throw new Error(`Expected header "${key}" to be present`);
-          }
+          const found = Object.keys(headers).some((k) => k.toLowerCase() === key.toLowerCase());
+          if (!found) throw new Error(`Expected header "${key}" to be present`);
         },
         jsonBody: () => {
           try {
-            if (typeof responseBody === 'string') {
-              JSON.parse(responseBody);
-            }
-          } catch {
-            throw new Error('Expected response body to be valid JSON');
-          }
+            if (typeof responseBody === 'string') JSON.parse(responseBody);
+          } catch { throw new Error('Expected response body to be valid JSON'); }
         },
         body: () => {
-          if (!responseBody) {
-            throw new Error('Expected response body to be present');
-          }
+          if (!responseBody) throw new Error('Expected response body to be present');
         },
       }
       : {
@@ -207,66 +147,34 @@ export class ScriptRunner {
           size: response.size,
           json: () => {
             try {
-              return typeof responseBody === 'string'
-                ? JSON.parse(responseBody)
-                : responseBody;
-            } catch {
-              return null;
-            }
+              return typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody;
+            } catch { return null; }
           },
           text: () => String(responseBody ?? ''),
-          to: {
-            have: responseToHave,
-          },
+          to: { have: responseToHave },
         }
         : {
-          code: 0,
-          status: 0,
-          statusText: '',
-          headers: {},
-          body: null,
-          responseTime: 0,
-          time: 0,
-          responseSize: 0,
-          size: 0,
-          json: () => null,
-          text: () => '',
-          to: {
-            have: responseToHave,
-          },
+          code: 0, status: 0, statusText: '', headers: {}, body: null,
+          responseTime: 0, time: 0, responseSize: 0, size: 0,
+          json: () => null, text: () => '', to: { have: responseToHave },
         },
 
       environment: {
         get: (key: string) => self.environment[key] ?? '',
         set: (key: string, value: any) => {
           const strValue = String(value ?? '');
-          self.environmentChanges.push({
-            id: generateId(),
-            key,
-            value: strValue,
-            enabled: true,
-          });
+          self.environmentChanges.push({ id: generateId(), key, value: strValue, enabled: true });
           self.environment[key] = strValue;
         },
         unset: (key: string) => {
-          self.environmentChanges.push({
-            id: generateId(),
-            key,
-            value: '',
-            enabled: false,
-          });
+          self.environmentChanges.push({ id: generateId(), key, value: '', enabled: false });
           delete self.environment[key];
         },
         has: (key: string) => key in self.environment,
         toObject: () => ({ ...self.environment }),
         clear: () => {
           Object.keys(self.environment).forEach((key) => {
-            self.environmentChanges.push({
-              id: generateId(),
-              key,
-              value: '',
-              enabled: false,
-            });
+            self.environmentChanges.push({ id: generateId(), key, value: '', enabled: false });
           });
           self.environment = {};
         },
@@ -276,33 +184,18 @@ export class ScriptRunner {
         get: (key: string) => self.globals[key] ?? '',
         set: (key: string, value: any) => {
           const strValue = String(value ?? '');
-          self.globalsChanges.push({
-            id: generateId(),
-            key,
-            value: strValue,
-            enabled: true,
-          });
+          self.globalsChanges.push({ id: generateId(), key, value: strValue, enabled: true });
           self.globals[key] = strValue;
         },
         unset: (key: string) => {
-          self.globalsChanges.push({
-            id: generateId(),
-            key,
-            value: '',
-            enabled: false,
-          });
+          self.globalsChanges.push({ id: generateId(), key, value: '', enabled: false });
           delete self.globals[key];
         },
         has: (key: string) => key in self.globals,
         toObject: () => ({ ...self.globals }),
         clear: () => {
           Object.keys(self.globals).forEach((key) => {
-            self.globalsChanges.push({
-              id: generateId(),
-              key,
-              value: '',
-              enabled: false,
-            });
+            self.globalsChanges.push({ id: generateId(), key, value: '', enabled: false });
           });
           self.globals = {};
         },
@@ -312,42 +205,22 @@ export class ScriptRunner {
         get: (key: string) => self.globals[key] ?? '',
         set: (key: string, value: any) => {
           const strValue = String(value ?? '');
-          self.globalsChanges.push({
-            id: generateId(),
-            key,
-            value: strValue,
-            enabled: true,
-          });
+          self.globalsChanges.push({ id: generateId(), key, value: strValue, enabled: true });
           self.globals[key] = strValue;
         },
         unset: (key: string) => {
-          self.globalsChanges.push({
-            id: generateId(),
-            key,
-            value: '',
-            enabled: false,
-          });
+          self.globalsChanges.push({ id: generateId(), key, value: '', enabled: false });
           delete self.globals[key];
         },
       },
 
       variables: {
         get: (key: string) => {
-          return (
-            self.environment[key] ??
-            self.globals[key] ??
-            self.context.iterationData?.[key] ??
-            ''
-          );
+          return self.environment[key] ?? self.globals[key] ?? self.context.iterationData?.[key] ?? '';
         },
         set: (key: string, value: any, scope: 'environment' | 'globals' = 'environment') => {
           const strValue = String(value ?? '');
-          const change: KeyValuePair = {
-            id: generateId(),
-            key,
-            value: strValue,
-            enabled: true,
-          };
+          const change: KeyValuePair = { id: generateId(), key, value: strValue, enabled: true };
           if (scope === 'environment') {
             self.environmentChanges.push(change);
             self.environment[key] = strValue;
@@ -363,29 +236,16 @@ export class ScriptRunner {
       test: (name: string, fn: () => void) => {
         try {
           fn();
-          self.testResults.push({
-            name,
-            passed: true,
-            timestamp: Date.now(),
-          });
+          self.testResults.push({ name, passed: true, timestamp: Date.now() });
         } catch (error: any) {
-          self.testResults.push({
-            name,
-            passed: false,
-            error: error?.message || 'Assertion failed',
-            timestamp: Date.now(),
-          });
+          self.testResults.push({ name, passed: false, error: error?.message || 'Assertion failed', timestamp: Date.now() });
         }
       },
 
       expect: (value: any) => createExpect(value),
 
       log: (...args: any[]) => {
-        const message = args
-          .map((arg) =>
-            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-          )
-          .join(' ');
+        const message = args.map((arg) => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)).join(' ');
         self.logs.push(message);
       },
 
@@ -393,17 +253,11 @@ export class ScriptRunner {
         eventName: 'test',
         iteration: self.context.iteration ?? 1,
         iterationCount: self.context.iterationCount ?? 1,
-        requestName: '',
-        requestId: '',
+        requestName: '', requestId: '',
       },
 
-      skipRequest: () => {
-        throw new Error('__SKIP_REQUEST__');
-      },
+      skipRequest: () => { throw new Error('__SKIP_REQUEST__'); },
 
-      /**
-       * ✅ РЕАЛИЗАЦИЯ pm.sendRequest — HTTP-запрос из скрипта
-       */
       sendRequest: async (req: any, callback?: (error: any, response: any) => void) => {
         try {
           const config: any = {
@@ -412,15 +266,12 @@ export class ScriptRunner {
             headers: req.headers || {},
             timeout: 30000,
           };
-
           if (req.body) {
             if (typeof req.body === 'string') {
               try {
                 config.data = JSON.parse(req.body);
                 config.headers = { ...config.headers, 'Content-Type': 'application/json' };
-              } catch {
-                config.data = req.body;
-              }
+              } catch { config.data = req.body; }
             } else {
               config.data = req.body;
               config.headers = { ...config.headers, 'Content-Type': 'application/json' };
@@ -431,20 +282,14 @@ export class ScriptRunner {
           const resp = {
             code: axiosResponse.status,
             status: axiosResponse.statusText,
-            headers: (axiosResponse.headers as any).toJSON
-              ? (axiosResponse.headers as any).toJSON()
-              : axiosResponse.headers,
+            headers: (axiosResponse.headers as any).toJSON ? (axiosResponse.headers as any).toJSON() : axiosResponse.headers,
             data: axiosResponse.data,
             responseTime: 0,
             json: () => axiosResponse.data,
-            text: () =>
-              typeof axiosResponse.data === 'string'
-                ? axiosResponse.data
-                : JSON.stringify(axiosResponse.data),
+            text: () => typeof axiosResponse.data === 'string' ? axiosResponse.data : JSON.stringify(axiosResponse.data),
           };
 
           self.logs.push(`[pm.sendRequest] ${req.method || 'GET'} ${req.url} → ${axiosResponse.status}`);
-
           if (callback) callback(null, resp);
           return resp;
         } catch (error: any) {
@@ -452,51 +297,30 @@ export class ScriptRunner {
             ? {
               code: error.response.status,
               status: error.response.statusText,
-              headers: (error.response.headers as any).toJSON
-                ? (error.response.headers as any).toJSON()
-                : error.response.headers,
+              headers: (error.response.headers as any).toJSON ? (error.response.headers as any).toJSON() : error.response.headers,
               data: error.response.data,
               responseTime: 0,
               json: () => error.response.data,
-              text: () =>
-                typeof error.response.data === 'string'
-                  ? error.response.data
-                  : JSON.stringify(error.response.data),
+              text: () => typeof error.response.data === 'string' ? error.response.data : JSON.stringify(error.response.data),
             }
             : null;
 
-          self.logs.push(
-            `[pm.sendRequest] ${req.method || 'GET'} ${req.url} → ERROR: ${error.message}`
-          );
-
+          self.logs.push(`[pm.sendRequest] ${req.method || 'GET'} ${req.url} → ERROR: ${error.message}`);
           if (callback) callback(error, errResp);
           if (errResp) return errResp;
           throw error;
         }
       },
 
-      /**
-       * ✅ РЕАЛИЗАЦИЯ pm.retryRequest — устанавливает флаг,
-       * App.tsx увидит его и повторит исходный запрос.
-       */
       retryRequest: () => {
         self.retryRequested = true;
         self.logs.push('[pm.retryRequest] Флаг повторного запроса установлен');
         throw new Error('__RETRY_REQUEST__');
       },
 
-      responseCode: response
-        ? {
-          code: response.status,
-          name: response.statusText,
-          detail: '',
-        }
-        : { code: 0, name: '', detail: '' },
-
+      responseCode: response ? { code: response.status, name: response.statusText, detail: '' } : { code: 0, name: '', detail: '' },
       responseHeaders: response?.headers || {},
-
       responseTime: response?.time || 0,
-
       responseBody: responseBody ?? '',
     };
 
@@ -506,17 +330,9 @@ export class ScriptRunner {
     return pmObject;
   }
 
-  async runScript(
-    script: string,
-    response?: HttpResponse
-  ): Promise<ScriptExecutionResult> {
+  async runScript(script: string, response?: HttpResponse): Promise<ScriptExecutionResult> {
     if (!script || !script.trim()) {
-      return {
-        environmentChanges: [],
-        globalsChanges: [],
-        testResults: [],
-        logs: [],
-      };
+      return { environmentChanges: [], globalsChanges: [], testResults: [], logs: [] };
     }
 
     try {
@@ -530,28 +346,13 @@ export class ScriptRunner {
         debug: (...args: any[]) => pm.log('[DEBUG]', ...args),
       };
 
-      const scriptFunction = new Function(
-        'pm',
-        'postman',
-        'console',
-        'require',
-        'process',
-        'global',
-        'window',
-        'document',
+      // ✅ ИСПОЛЬЗУЕМ AsyncFunction — поддерживает await
+      const scriptFunction = new AsyncFunction(
+        'pm', 'postman', 'console', 'require', 'process', 'global', 'window', 'document',
         script
       );
 
-      await scriptFunction(
-        pm,
-        pm,
-        sandboxConsole,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined
-      );
+      await scriptFunction(pm, pm, sandboxConsole, undefined, undefined, undefined, undefined, undefined);
 
       return {
         environmentChanges: this.environmentChanges,
@@ -562,49 +363,20 @@ export class ScriptRunner {
       };
     } catch (error: any) {
       if (error?.message === '__SKIP_REQUEST__') {
-        return {
-          environmentChanges: this.environmentChanges,
-          globalsChanges: this.globalsChanges,
-          testResults: this.testResults,
-          logs: this.logs,
-          skipped: true,
-        };
+        return { environmentChanges: this.environmentChanges, globalsChanges: this.globalsChanges, testResults: this.testResults, logs: this.logs, skipped: true };
       }
-
       if (error?.message === '__RETRY_REQUEST__') {
-        return {
-          environmentChanges: this.environmentChanges,
-          globalsChanges: this.globalsChanges,
-          testResults: this.testResults,
-          logs: this.logs,
-          retry: true,
-        };
+        return { environmentChanges: this.environmentChanges, globalsChanges: this.globalsChanges, testResults: this.testResults, logs: this.logs, retry: true };
       }
-
-      return {
-        environmentChanges: this.environmentChanges,
-        globalsChanges: this.globalsChanges,
-        testResults: this.testResults,
-        logs: this.logs,
-        error: error?.message || 'Script execution failed',
-      };
+      return { environmentChanges: this.environmentChanges, globalsChanges: this.globalsChanges, testResults: this.testResults, logs: this.logs, error: error?.message || 'Script execution failed' };
     }
   }
 }
 
-/**
- * Замена переменных {{var}} в тексте скрипта
- */
-export function replaceVariablesInScript(
-  script: string,
-  variables: KeyValuePair[]
-): string {
+export function replaceVariablesInScript(script: string, variables: KeyValuePair[]): string {
   if (!script) return script;
   let result = script;
-  const sortedVars = [...variables]
-    .filter((v) => v.enabled && v.key)
-    .sort((a, b) => b.key.length - a.key.length);
-
+  const sortedVars = [...variables].filter((v) => v.enabled && v.key).sort((a, b) => b.key.length - a.key.length);
   sortedVars.forEach((variable) => {
     const escapedKey = variable.key.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`\\{\\{${escapedKey}\\}\\}`, 'g');
@@ -613,9 +385,6 @@ export function replaceVariablesInScript(
   return result;
 }
 
-/**
- * Хелпер для создания контекста скрипта из текущего запроса
- */
 export function createScriptContext(
   request: any,
   response: HttpResponse | null,
@@ -626,18 +395,10 @@ export function createScriptContext(
   iterationCount?: number
 ): ScriptContext {
   const env: Record<string, string> = {};
-  envVariables
-    .filter((v) => v.enabled && v.key)
-    .forEach((v) => {
-      env[v.key] = v.value;
-    });
+  envVariables.filter((v) => v.enabled && v.key).forEach((v) => { env[v.key] = v.value; });
 
   const globals: Record<string, string> = {};
-  globalVariables
-    .filter((v) => v.enabled && v.key)
-    .forEach((v) => {
-      globals[v.key] = v.value;
-    });
+  globalVariables.filter((v) => v.enabled && v.key).forEach((v) => { globals[v.key] = v.value; });
 
   return {
     request: {
