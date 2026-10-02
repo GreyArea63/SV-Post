@@ -54,6 +54,17 @@ interface Toast {
   message: string;
 }
 
+/**
+ * Override переменных, полученных из pre-request / test скриптов.
+ * Позволяет применить изменения к ТЕКУЩЕМУ запросу, не дожидаясь React setState.
+ */
+interface ScriptOverrides {
+  env: Record<string, string>;       // key → value (null означает unset)
+  globals: Record<string, string>;
+  envUnset: Set<string>;
+  globalsUnset: Set<string>;
+}
+
 // ============================================================
 // КОНСТАНТЫ
 // ============================================================
@@ -113,13 +124,56 @@ const removeHeaderCaseInsensitive = (headers: Record<string, string>, name: stri
   });
 };
 
+/**
+ * Создаёт пустой ScriptOverrides.
+ */
+const emptyOverrides = (): ScriptOverrides => ({
+  env: {},
+  globals: {},
+  envUnset: new Set(),
+  globalsUnset: new Set(),
+});
+
+/**
+ * Сливает изменения из ScriptExecutionResult в overrides.
+ * enabled=true → добавить в map; enabled=false → добавить в unset.
+ */
+const mergeScriptChanges = (
+  overrides: ScriptOverrides,
+  result: ScriptExecutionResult | null
+): ScriptOverrides => {
+  if (!result) return overrides;
+  const next: ScriptOverrides = {
+    env: { ...overrides.env },
+    globals: { ...overrides.globals },
+    envUnset: new Set(overrides.envUnset),
+    globalsUnset: new Set(overrides.globalsUnset),
+  };
+  result.environmentChanges.forEach((c) => {
+    if (c.enabled) {
+      next.env[c.key] = c.value;
+      next.envUnset.delete(c.key);
+    } else {
+      delete next.env[c.key];
+      next.envUnset.add(c.key);
+    }
+  });
+  result.globalsChanges.forEach((c) => {
+    if (c.enabled) {
+      next.globals[c.key] = c.value;
+      next.globalsUnset.delete(c.key);
+    } else {
+      delete next.globals[c.key];
+      next.globalsUnset.add(c.key);
+    }
+  });
+  return next;
+};
+
 // ============================================================
 // РЕКУРСИВНЫЕ УТИЛИТЫ ДЛЯ ПАПОК
 // ============================================================
-const findFolderById = (
-  folders: CollectionFolder[],
-  id: string
-): CollectionFolder | null => {
+const findFolderById = (folders: CollectionFolder[], id: string): CollectionFolder | null => {
   for (const f of folders) {
     if (f.id === id) return f;
     const found = findFolderById(f.folders, id);
@@ -133,13 +187,9 @@ const addFolderToTree = (
   parentId: string | null,
   newFolder: CollectionFolder
 ): CollectionFolder[] => {
-  if (parentId === null) {
-    return [...folders, newFolder];
-  }
+  if (parentId === null) return [...folders, newFolder];
   return folders.map(f => {
-    if (f.id === parentId) {
-      return { ...f, folders: [...f.folders, newFolder] };
-    }
+    if (f.id === parentId) return { ...f, folders: [...f.folders, newFolder] };
     return { ...f, folders: addFolderToTree(f.folders, parentId, newFolder) };
   });
 };
@@ -170,7 +220,6 @@ const extractRequestFromTree = (
   requestId: string
 ): { newFolders: CollectionFolder[]; request: HttpRequest | null } => {
   let extracted: HttpRequest | null = null;
-
   const walk = (folders: CollectionFolder[]): CollectionFolder[] => {
     return folders.map(f => {
       if (f.id === folderId) {
@@ -183,7 +232,6 @@ const extractRequestFromTree = (
       return { ...f, folders: walk(f.folders) };
     });
   };
-
   return { newFolders: walk(folders), request: extracted };
 };
 
@@ -194,9 +242,7 @@ const insertRequestIntoTree = (
 ): CollectionFolder[] => {
   if (targetFolderId === null) return folders;
   return folders.map(f => {
-    if (f.id === targetFolderId) {
-      return { ...f, requests: [...f.requests, request] };
-    }
+    if (f.id === targetFolderId) return { ...f, requests: [...f.requests, request] };
     return { ...f, folders: insertRequestIntoTree(f.folders, targetFolderId, request) };
   });
 };
@@ -207,7 +253,6 @@ const mergeFolderTrees = (
 ): CollectionFolder[] => {
   const map = new Map<string, CollectionFolder>();
   existing.forEach(f => map.set(f.name.trim().toLowerCase(), f));
-
   incoming.forEach(f => {
     const key = f.name.trim().toLowerCase();
     const prev = map.get(key);
@@ -230,7 +275,6 @@ const mergeFolderTrees = (
       map.set(key, { ...f, id: generateId() });
     }
   });
-
   return Array.from(map.values());
 };
 
@@ -239,9 +283,7 @@ const mergeEnvironments = (
   incoming: Environment[]
 ): Environment[] => {
   const map = new Map<string, Environment>();
-  existing.forEach(e => {
-    map.set(e.name.trim().toLowerCase(), e);
-  });
+  existing.forEach(e => { map.set(e.name.trim().toLowerCase(), e); });
   incoming.forEach(e => {
     const key = e.name.trim().toLowerCase();
     const prev = map.get(key);
@@ -260,7 +302,6 @@ const mergeCollections = (
 ): Collection[] => {
   const map = new Map<string, Collection>();
   existing.forEach(c => map.set(c.name.trim().toLowerCase(), c));
-
   incoming.forEach(c => {
     const key = c.name.trim().toLowerCase();
     const prev = map.get(key);
@@ -283,7 +324,6 @@ const mergeCollections = (
       map.set(key, { ...c, id: generateId() });
     }
   });
-
   return Array.from(map.values());
 };
 
@@ -527,10 +567,8 @@ function App() {
 
     const loadData = async () => {
       await delay(DB_INIT_DELAY);
-
       for (let attempt = 1; attempt <= DB_MAX_RETRIES; attempt++) {
         if (!isMounted) return;
-
         try {
           const [cols, hist, envs, globals, activeEnv] = await Promise.all([
             storage.getCollections(),
@@ -539,15 +577,12 @@ function App() {
             storage.getGlobalVariables(),
             storage.getActiveEnvironment(),
           ]);
-
           if (!isMounted) return;
-
           const migratedCols = cols.map(c => ({
             ...c,
             folders: Array.isArray(c.folders) ? c.folders : [],
             requests: Array.isArray(c.requests) ? c.requests : [],
           }));
-
           setCollections(migratedCols);
           setHistory(hist);
           setEnvironments(envs);
@@ -558,14 +593,11 @@ function App() {
           return;
         } catch (error) {
           console.error(`[DB] Ошибка загрузки (попытка ${attempt}/${DB_MAX_RETRIES}):`, error);
-
           if (attempt < DB_MAX_RETRIES) {
             await delay(DB_RETRY_DELAY);
             continue;
           }
-
           if (!isMounted) return;
-
           if (storage.isDatabaseCorrupted()) {
             setShowDbErrorModal(true);
           } else {
@@ -575,12 +607,8 @@ function App() {
         }
       }
     };
-
     loadData();
-
-    return () => {
-      isMounted = false;
-    };
+    return () => { isMounted = false; };
   }, [isInitialized, showToast]);
 
   const handleResetDatabase = useCallback(async () => {
@@ -588,9 +616,7 @@ function App() {
       await storage.resetDatabase();
       setShowDbErrorModal(false);
       showToast('success', 'База данных сброшена. Приложение перезагрузится...');
-      setTimeout(() => {
-        window.location.reload();
-      }, 1500);
+      setTimeout(() => { window.location.reload(); }, 1500);
     } catch (error) {
       console.error('Failed to reset database:', error);
       showToast('error', 'Не удалось сбросить базу данных');
@@ -629,13 +655,57 @@ function App() {
     return environments.find(env => env.id === activeEnvId) || null;
   }, [environments, activeEnvId]);
 
-  const processRequest = useCallback((request: HttpRequest): HttpRequest => {
+  // ============================================================
+  // processRequest с поддержкой override от скриптов
+  // ============================================================
+  const processRequest = useCallback((
+    request: HttpRequest,
+    overrides?: ScriptOverrides
+  ): HttpRequest => {
     const env = getActiveEnvironment();
     const envVariables = env?.variables || [];
-    const allVariables = [
+
+    // Собираем "сырые" переменные (без override)
+    const baseVars: KeyValuePair[] = [
       ...globalVariables.filter(g => g.enabled),
       ...envVariables.filter(e => e.enabled),
     ];
+
+    // Применяем override: env и globals поверх
+    const withOverrides: KeyValuePair[] = baseVars.map(v => {
+      if (overrides) {
+        if (v.key in overrides.globals) {
+          return { ...v, value: overrides.globals[v.key] };
+        }
+        if (v.key in overrides.env) {
+          return { ...v, value: overrides.env[v.key] };
+        }
+      }
+      return v;
+    }).filter(v => {
+      if (!overrides) return true;
+      // Убираем unset-переменные
+      if (overrides.globalsUnset.has(v.key)) return false;
+      if (overrides.envUnset.has(v.key)) return false;
+      return true;
+    });
+
+    // Добавляем НОВЫЕ переменные, которых не было в baseVars, но появились из скриптов
+    if (overrides) {
+      Object.entries(overrides.globals).forEach(([key, value]) => {
+        if (!withOverrides.find(v => v.key === key) && !overrides.globalsUnset.has(key)) {
+          withOverrides.push({ id: 'script_g_' + key, key, value, enabled: true });
+        }
+      });
+      Object.entries(overrides.env).forEach(([key, value]) => {
+        if (!withOverrides.find(v => v.key === key) && !overrides.envUnset.has(key)) {
+          withOverrides.push({ id: 'script_e_' + key, key, value, enabled: true });
+        }
+      });
+    }
+
+    const allVariables = withOverrides;
+
     return {
       ...request,
       url: replaceVariables(request.url, allVariables),
@@ -657,6 +727,9 @@ function App() {
     };
   }, [getActiveEnvironment, globalVariables]);
 
+  // ============================================================
+  // executeScript (использует ScriptRunner с полным контекстом)
+  // ============================================================
   const executeScript = useCallback(async (
     scriptType: 'preRequest' | 'test',
     script: string,
@@ -703,27 +776,35 @@ function App() {
     return await runner.runScript(processedScript, httpResponse || undefined);
   }, [getActiveEnvironment, globalVariables]);
 
+  // ============================================================
+  // applyScriptChanges — сохраняет изменения в React state + IndexedDB
+  // ============================================================
   const applyScriptChanges = useCallback(async (result: ScriptExecutionResult) => {
-    if (result.environmentChanges.length > 0 && activeEnvId) {
-      const env = environments.find((e) => e.id === activeEnvId);
-      if (env) {
-        const updatedVars = [...env.variables];
-        result.environmentChanges.forEach((change) => {
-          const existingIndex = updatedVars.findIndex((v) => v.key === change.key);
-          if (change.enabled) {
-            if (existingIndex >= 0) {
-              updatedVars[existingIndex] = { ...updatedVars[existingIndex], value: change.value };
+    if (result.environmentChanges.length > 0) {
+      if (activeEnvId) {
+        const env = environments.find((e) => e.id === activeEnvId);
+        if (env) {
+          const updatedVars = [...env.variables];
+          result.environmentChanges.forEach((change) => {
+            const existingIndex = updatedVars.findIndex((v) => v.key === change.key);
+            if (change.enabled) {
+              if (existingIndex >= 0) {
+                updatedVars[existingIndex] = { ...updatedVars[existingIndex], value: change.value };
+              } else {
+                updatedVars.push({ id: generateId(), key: change.key, value: change.value, enabled: true });
+              }
             } else {
-              updatedVars.push({ id: generateId(), key: change.key, value: change.value, enabled: true });
+              if (existingIndex >= 0) updatedVars.splice(existingIndex, 1);
             }
-          } else {
-            if (existingIndex >= 0) updatedVars.splice(existingIndex, 1);
-          }
-        });
-        const updatedEnv = { ...env, variables: updatedVars };
-        const updatedEnvs = environments.map((e) => e.id === activeEnvId ? updatedEnv : e);
-        setEnvironments(updatedEnvs);
-        await storage.saveEnvironments(updatedEnvs);
+          });
+          const updatedEnv = { ...env, variables: updatedVars };
+          const updatedEnvs = environments.map((e) => e.id === activeEnvId ? updatedEnv : e);
+          setEnvironments(updatedEnvs);
+          await storage.saveEnvironments(updatedEnvs);
+        }
+      } else {
+        // Нет активного окружения — предупреждаем пользователя
+        showToast('info', 'pm.environment.set проигнорирован: нет активного окружения');
       }
     }
 
@@ -744,7 +825,7 @@ function App() {
       setGlobalVariables(updatedGlobals);
       await storage.saveGlobalVariables(updatedGlobals);
     }
-  }, [activeEnvId, environments, globalVariables]);
+  }, [activeEnvId, environments, globalVariables, showToast]);
 
   const handleRunPreRequest = useCallback(async () => {
     if (!activeTab || !activeTab.request.scripts?.preRequest) return null;
@@ -770,7 +851,6 @@ function App() {
       showToast('error', 'Сначала отправьте запрос');
       return null;
     }
-
     const result = await executeScript('test', activeTab.request.scripts.test, activeTab.request, activeTab.response);
     if (result) {
       setLastScriptResult(result);
@@ -785,38 +865,64 @@ function App() {
     return result;
   }, [activeTab, executeScript, showToast, applyScriptChanges]);
 
+  // ============================================================
+  // handleSend — ГЛАВНАЯ ФУНКЦИЯ (с override из скриптов)
+  // ============================================================
   const handleSend = useCallback(async () => {
     if (!activeTab) return;
 
-    let preRequestResult: ScriptExecutionResult | null = null;
-    if (activeTab.request.scripts?.preRequest) {
-      preRequestResult = await executeScript('preRequest', activeTab.request.scripts.preRequest, activeTab.request, null);
-      if (preRequestResult) {
-        if (preRequestResult.error) {
-          showToast('error', `Pre-request script error: ${preRequestResult.error}`);
-          return;
-        }
-        if (preRequestResult.skipped) {
-          showToast('info', 'Request skipped by pre-request script');
-          setTabs(prevTabs => prevTabs.map(tab =>
-            tab.id === activeTabId ? { ...tab, loading: false, error: 'Request skipped by script', testResults: preRequestResult!.testResults, scriptLogs: preRequestResult!.logs } : tab
-          ));
-          return;
-        }
-        await applyScriptChanges(preRequestResult);
-      }
-    }
+    let overrides = emptyOverrides();
+    let accumulatedLogs: string[] = [];
 
     setTabs(prevTabs => prevTabs.map(tab =>
       tab.id === activeTabId ? { ...tab, loading: true, error: null, response: null } : tab
     ));
 
     let attempt = 0;
-    let currentPreRequestLogs = preRequestResult?.logs || [];
+    let lastTestResult: ScriptExecutionResult | null = null;
 
     while (attempt <= MAX_REQUEST_RETRIES) {
+      // === 1. Pre-request script (перезапускается на каждой итерации, включая retry) ===
+      let preRequestResult: ScriptExecutionResult | null = null;
+      if (activeTab.request.scripts?.preRequest) {
+        preRequestResult = await executeScript(
+          'preRequest',
+          activeTab.request.scripts.preRequest,
+          activeTab.request,
+          null
+        );
+        if (preRequestResult) {
+          accumulatedLogs = [...accumulatedLogs, ...(preRequestResult.logs || [])];
+          overrides = mergeScriptChanges(overrides, preRequestResult);
+
+          if (preRequestResult.error) {
+            showToast('error', `Pre-request script error: ${preRequestResult.error}`);
+            setTabs(prevTabs => prevTabs.map(tab =>
+              tab.id === activeTabId ? { ...tab, loading: false, error: preRequestResult!.error || 'Script error' } : tab
+            ));
+            await applyScriptChanges(preRequestResult);
+            return;
+          }
+          if (preRequestResult.skipped) {
+            showToast('info', 'Request skipped by pre-request script');
+            setTabs(prevTabs => prevTabs.map(tab =>
+              tab.id === activeTabId ? {
+                ...tab,
+                loading: false,
+                error: 'Request skipped by script',
+                testResults: preRequestResult!.testResults,
+                scriptLogs: accumulatedLogs,
+              } : tab
+            ));
+            await applyScriptChanges(preRequestResult);
+            return;
+          }
+        }
+      }
+
+      // === 2. Формируем запрос с override ===
       try {
-        const processedRequest = processRequest(activeTab.request);
+        const processedRequest = processRequest(activeTab.request, overrides);
         let url = processedRequest.url;
         const queryParams = parseKeyValuePairs(processedRequest.queryParams);
         const urlSearchParams = new URLSearchParams(url.split('?')[1] || '');
@@ -900,7 +1006,6 @@ function App() {
                 headers['Content-Type'] = 'application/json';
               }
               break;
-
             case 'x-www-form-urlencoded':
               if (processedRequest.body.form && processedRequest.body.form.length > 0) {
                 const formData = new URLSearchParams();
@@ -916,7 +1021,6 @@ function App() {
                 headers['Content-Type'] = 'application/x-www-form-urlencoded';
               }
               break;
-
             case 'form-data':
               if (processedRequest.body.form && processedRequest.body.form.length > 0) {
                 const formData = new FormData();
@@ -927,7 +1031,6 @@ function App() {
                 removeHeaderCaseInsensitive(headers, 'Content-Type');
               }
               break;
-
             case 'graphql':
               try {
                 const graphqlData = JSON.parse(processedRequest.body.content);
@@ -940,7 +1043,6 @@ function App() {
                 headers['Content-Type'] = 'application/json';
               }
               break;
-
             case 'binary':
               config.data = processedRequest.body.content;
               if (!hasManualContentType) {
@@ -964,23 +1066,27 @@ function App() {
           size: new Blob([JSON.stringify(axiosResponse.data)]).size,
         };
 
+        // === 3. Test script ===
         let testResult: ScriptExecutionResult | null = null;
         if (activeTab.request.scripts?.test || getActiveEnvironment()?.globalTestScript?.trim()) {
           testResult = await executeScript('test', activeTab.request.scripts?.test || '', activeTab.request, httpResponse);
           if (testResult) {
-            await applyScriptChanges(testResult);
+            lastTestResult = testResult;
+            accumulatedLogs = [...accumulatedLogs, ...(testResult.logs || [])];
+            overrides = mergeScriptChanges(overrides, testResult);
           }
         }
 
+        // === 4. Retry? ===
         if (testResult?.retry && attempt < MAX_REQUEST_RETRIES) {
           attempt++;
           console.log(`[Retry] Попытка ${attempt}/${MAX_REQUEST_RETRIES} после pm.retryRequest()`);
           showToast('info', `Обновление токена... повторный запрос (${attempt}/${MAX_REQUEST_RETRIES})`);
           await delay(150);
-          currentPreRequestLogs = [...currentPreRequestLogs, ...(testResult.logs || [])];
-          continue;
+          continue; // → pre-request перезапустится на новой итерации
         }
 
+        // === 5. Финализация ===
         setTabs(prevTabs => prevTabs.map(tab =>
           tab.id === activeTabId ? {
             ...tab,
@@ -988,7 +1094,7 @@ function App() {
             response: httpResponse,
             error: null,
             testResults: testResult?.testResults || [],
-            scriptLogs: [...currentPreRequestLogs, ...(testResult?.logs || [])],
+            scriptLogs: accumulatedLogs,
           } : tab
         ));
 
@@ -1001,6 +1107,13 @@ function App() {
         const newHistory = [historyItem, ...history].slice(0, MAX_HISTORY);
         setHistory(newHistory);
         await storage.saveHistory(newHistory);
+
+        if (testResult) {
+          await applyScriptChanges(testResult);
+        }
+        if (preRequestResult) {
+          await applyScriptChanges(preRequestResult);
+        }
 
         if (testResult && testResult.testResults.length > 0) {
           const passed = testResult.testResults.filter((t) => t.passed).length;
@@ -1036,7 +1149,9 @@ function App() {
           if (activeTab.request.scripts?.test || getActiveEnvironment()?.globalTestScript?.trim()) {
             testResult = await executeScript('test', activeTab.request.scripts?.test || '', activeTab.request, httpResponse);
             if (testResult) {
-              await applyScriptChanges(testResult);
+              lastTestResult = testResult;
+              accumulatedLogs = [...accumulatedLogs, ...(testResult.logs || [])];
+              overrides = mergeScriptChanges(overrides, testResult);
             }
           }
 
@@ -1045,7 +1160,6 @@ function App() {
             console.log(`[Retry] Попытка ${attempt}/${MAX_REQUEST_RETRIES} после pm.retryRequest() (ошибка ${httpResponse.status})`);
             showToast('info', `Обновление токена... повторный запрос (${attempt}/${MAX_REQUEST_RETRIES})`);
             await delay(150);
-            currentPreRequestLogs = [...currentPreRequestLogs, ...(testResult.logs || [])];
             continue;
           }
 
@@ -1056,15 +1170,26 @@ function App() {
               response: httpResponse,
               error: null,
               testResults: testResult?.testResults || [],
-              scriptLogs: [...currentPreRequestLogs, ...(testResult?.logs || [])],
+              scriptLogs: accumulatedLogs,
             } : tab
           ));
+
+          if (testResult) {
+            await applyScriptChanges(testResult);
+          }
+          if (preRequestResult) {
+            await applyScriptChanges(preRequestResult);
+          }
+
           showToast('error', `Ошибка: ${httpResponse.status}`);
           return;
         } else {
           setTabs(prevTabs => prevTabs.map(tab =>
             tab.id === activeTabId ? { ...tab, loading: false, error: err.message || 'Ошибка соединения' } : tab
           ));
+          if (preRequestResult) {
+            await applyScriptChanges(preRequestResult);
+          }
           showToast('error', err.message || 'Ошибка соединения');
           return;
         }
@@ -1186,9 +1311,7 @@ function App() {
           const folderId = findInFolders(collection.folders);
           return { folderId, exists: folderId !== null };
         };
-
         const location = findRequestLocation();
-
         let updatedCollection: Collection;
         if (location.exists) {
           if (location.folderId === null) {
@@ -1219,7 +1342,6 @@ function App() {
             requests: [...collection.requests, activeTab.request],
           };
         }
-
         const updatedCollections = collections.map(c =>
           c.id === activeTab.collectionId ? updatedCollection : c
         );
@@ -1237,7 +1359,6 @@ function App() {
         ));
       }
     }
-
     setShowSaveRequestModal({
       request: activeTab.request,
       tabId: activeTab.id,
@@ -1268,9 +1389,7 @@ function App() {
   // ============================================================
   // КОЛЛЕКЦИИ — CRUD
   // ============================================================
-  const handleAddCollection = useCallback(() => {
-    setShowNewCollectionModal(true);
-  }, []);
+  const handleAddCollection = useCallback(() => { setShowNewCollectionModal(true); }, []);
 
   const handleCreateCollection = useCallback(async (name: string) => {
     const newCollection: Collection = {
@@ -1299,7 +1418,6 @@ function App() {
     const updatedCollections = collections.filter(c => c.id !== collectionId);
     setCollections(updatedCollections);
     await storage.saveCollections(updatedCollections);
-
     setTabs(prevTabs => {
       const filtered = prevTabs.filter(tab => tab.collectionId !== collectionId);
       if (filtered.length === 0) {
@@ -1320,7 +1438,6 @@ function App() {
       }
       return filtered;
     });
-
     showToast('success', 'Коллекция удалена');
   }, [collections, activeTabId, showToast]);
 
@@ -1334,13 +1451,11 @@ function App() {
   ) => {
     const collection = collections.find(c => c.id === collectionId);
     if (!collection) return;
-
     let parentName = collection.name;
     if (parentFolderId) {
       const folder = findFolderById(collection.folders, parentFolderId);
       if (folder) parentName = folder.name;
     }
-
     setPendingFolderParent({ collectionId, parentFolderId, parentName });
     setShowNewFolderModal(true);
   }, [collections]);
@@ -1348,19 +1463,16 @@ function App() {
   const handleConfirmCreateFolder = useCallback(async (name: string) => {
     if (!pendingFolderParent) return;
     const { collectionId, parentFolderId } = pendingFolderParent;
-
     const newFolder: CollectionFolder = {
       id: generateId(),
       name,
       folders: [],
       requests: [],
     };
-
     const updatedCollections = collections.map(c => {
       if (c.id !== collectionId) return c;
       return { ...c, folders: addFolderToTree(c.folders, parentFolderId, newFolder) };
     });
-
     setCollections(updatedCollections);
     await storage.saveCollections(updatedCollections);
     setShowNewFolderModal(false);
@@ -1382,10 +1494,7 @@ function App() {
     showToast('success', `Папка переименована в "${newName}"`);
   }, [collections, showToast]);
 
-  const handleDeleteFolder = useCallback(async (
-    collectionId: string,
-    folderId: string
-  ) => {
+  const handleDeleteFolder = useCallback(async (collectionId: string, folderId: string) => {
     const updatedCollections = collections.map(c => {
       if (c.id !== collectionId) return c;
       return { ...c, folders: deleteFolderFromTree(c.folders, folderId) };
@@ -1407,7 +1516,6 @@ function App() {
   ) => {
     const sourceCollection = collections.find(c => c.id === sourceCollectionId);
     if (!sourceCollection) return;
-
     let request: HttpRequest | null = null;
     let updatedSourceCollection: Collection = sourceCollection;
 
@@ -1435,10 +1543,7 @@ function App() {
       return;
     }
 
-    const newRequest: HttpRequest = {
-      ...request,
-      id: generateId(),
-    };
+    const newRequest: HttpRequest = { ...request, id: generateId() };
 
     if (sourceCollectionId === targetCollectionId) {
       const updatedTargetCollection: Collection = {
@@ -1450,7 +1555,6 @@ function App() {
           ? updatedSourceCollection.folders
           : insertRequestIntoTree(updatedSourceCollection.folders, targetFolderId, newRequest),
       };
-
       const updated = collections.map(c =>
         c.id === sourceCollectionId ? updatedTargetCollection : c
       );
@@ -1472,13 +1576,11 @@ function App() {
         ? targetCollection.folders
         : insertRequestIntoTree(targetCollection.folders, targetFolderId, newRequest),
     };
-
     const updated = collections.map(c => {
       if (c.id === sourceCollectionId) return updatedSourceCollection;
       if (c.id === targetCollectionId) return updatedTargetCollection;
       return c;
     });
-
     setCollections(updated);
     await storage.saveCollections(updated);
     showToast('success', `Запрос "${request.name}" перемещён`);
@@ -1495,7 +1597,6 @@ function App() {
   ) => {
     const updatedCollections = collections.map(c => {
       if (c.id !== collectionId) return c;
-
       if (folderId) {
         const updateFolder = (folders: CollectionFolder[]): CollectionFolder[] =>
           folders.map(f => {
@@ -1518,16 +1619,13 @@ function App() {
         ),
       };
     });
-
     setCollections(updatedCollections);
     await storage.saveCollections(updatedCollections);
-
     setTabs(prevTabs => prevTabs.map(tab => {
       if (tab.request.id !== requestId) return tab;
       const updatedRequest = { ...tab.request, name: newName };
       return { ...tab, request: updatedRequest, savedSnapshot: createSnapshot(updatedRequest) };
     }));
-
     showToast('success', `Запрос переименован в "${newName}"`);
   }, [collections, showToast]);
 
@@ -1550,10 +1648,8 @@ function App() {
       }
       return { ...c, requests: c.requests.filter(r => r.id !== requestId) };
     });
-
     setCollections(updatedCollections);
     await storage.saveCollections(updatedCollections);
-
     setTabs(prevTabs => {
       const filtered = prevTabs.filter(tab => tab.request.id !== requestId);
       if (filtered.length === 0) {
@@ -1572,7 +1668,6 @@ function App() {
       }
       return filtered;
     });
-
     showToast('success', 'Запрос удалён');
   }, [collections, activeTabId, showToast]);
 
@@ -1583,7 +1678,6 @@ function App() {
   ) => {
     const collection = collections.find(c => c.id === collectionId);
     if (!collection) return;
-
     let original: HttpRequest | undefined;
     if (folderId) {
       original = findFolderById(collection.folders, folderId)?.requests.find(r => r.id === requestId);
@@ -1591,13 +1685,11 @@ function App() {
       original = collection.requests.find(r => r.id === requestId);
     }
     if (!original) return;
-
     const duplicate: HttpRequest = {
       ...original,
       id: generateId(),
       name: `${original.name} (copy)`,
     };
-
     const updatedCollections = collections.map(c => {
       if (c.id !== collectionId) return c;
       if (folderId) {
@@ -1612,7 +1704,6 @@ function App() {
       }
       return { ...c, requests: [...c.requests, duplicate] };
     });
-
     setCollections(updatedCollections);
     await storage.saveCollections(updatedCollections);
     showToast('success', `Запрос "${duplicate.name}" создан`);
@@ -1649,7 +1740,6 @@ function App() {
   ) => {
     const collection = collections.find(c => c.id === collectionId);
     if (!collection) return;
-
     let request: HttpRequest | undefined;
     if (folderId) {
       const folder = findFolderById(collection.folders, folderId);
@@ -1657,12 +1747,10 @@ function App() {
     } else {
       request = collection.requests.find(r => r.id === requestId);
     }
-
     if (!request) {
       showToast('error', 'Запрос не найден в коллекции');
       return;
     }
-
     if (activeTab && isTabEmpty(activeTab)) {
       setTabs(prevTabs => prevTabs.map(tab =>
         tab.id === activeTabId
@@ -1679,12 +1767,10 @@ function App() {
       showToast('info', `Загружен запрос: ${request.name}`);
       return;
     }
-
     if (tabs.length >= MAX_TABS) {
       showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
       return;
     }
-
     const newTab: Tab = {
       id: generateId(),
       request: { ...request },
@@ -1808,10 +1894,7 @@ function App() {
 
   const handleOpenSaveRequestModal = useCallback(() => {
     if (!activeTab) return;
-    setShowSaveRequestModal({
-      request: activeTab.request,
-      tabId: activeTab.id,
-    });
+    setShowSaveRequestModal({ request: activeTab.request, tabId: activeTab.id });
   }, [activeTab]);
 
   const handleSaveRequestToCollection = useCallback(async (
@@ -1823,10 +1906,8 @@ function App() {
     try {
       const collection = collections.find(c => c.id === collectionId);
       if (!collection) throw new Error('Коллекция не найдена');
-
       let existingRequest: HttpRequest | undefined;
       let existingFolderId: string | null = null;
-
       existingRequest = collection.requests.find(r => r.id === request.id);
       if (!existingRequest) {
         const findInFolders = (folders: CollectionFolder[]): { req: HttpRequest; folderId: string } | null => {
@@ -1844,9 +1925,7 @@ function App() {
           existingFolderId = found.folderId;
         }
       }
-
       let updatedCollection: Collection;
-
       if (existingRequest) {
         const updatedRequest = { ...request, name: requestName };
         if (existingFolderId === null) {
@@ -1877,7 +1956,6 @@ function App() {
           id: generateId(),
           name: requestName,
         };
-
         if (!folderId) {
           updatedCollection = {
             ...collection,
@@ -1890,17 +1968,14 @@ function App() {
           };
         }
       }
-
       const updatedCollections = collections.map(c =>
         c.id === collectionId ? updatedCollection : c
       );
       setCollections(updatedCollections);
       await storage.saveCollections(updatedCollections);
-
       const savedRequest = existingRequest
         ? { ...request, name: requestName }
         : { ...request, id: generateId(), name: requestName };
-
       setTabs(prevTabs => prevTabs.map(tab =>
         tab.id === activeTabId ? {
           ...tab,
@@ -1973,12 +2048,9 @@ function App() {
     showToast('success', `Переменная ${key} обновлена`);
   }, [globalVariables, environments, activeEnvId, showToast]);
 
-  // ✅ НОВЫЙ КОЛБЭК: импорт из cURL
   const handleImportCurl = useCallback((request: HttpRequest) => {
     setShowImportCurl(false);
-
     if (activeTab && isTabEmpty(activeTab)) {
-      // Загружаем в текущую пустую вкладку
       setTabs(prevTabs => prevTabs.map(tab =>
         tab.id === activeTabId
           ? {
@@ -1994,12 +2066,10 @@ function App() {
       showToast('success', `Импортирован запрос: ${request.method} ${request.url}`);
       return;
     }
-
     if (tabs.length >= MAX_TABS) {
       showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
       return;
     }
-
     const newTab: Tab = {
       id: generateId(),
       request,
