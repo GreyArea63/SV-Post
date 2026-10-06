@@ -18,6 +18,8 @@ interface TabsProps {
   onTabClose: (tabId: string) => void;
   onNewTab: () => void;
   onTabsReorder?: (tabs: Tab[]) => void;
+  /** ID вкладок с несохранёнными изменениями — показывается индикатор */
+  unsavedTabIds?: Set<string>;
 }
 
 const MAX_TABS = 10;
@@ -29,12 +31,13 @@ export const Tabs: React.FC<TabsProps> = ({
   onTabClose,
   onNewTab,
   onTabsReorder,
+  unsavedTabIds,
 }) => {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
 
-  // ИСПРАВЛЕНИЕ 2.25: Drag-and-drop для переупорядочивания вкладок
+  // Drag-and-drop для переупорядочивания вкладок
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDragIndex(index);
     e.dataTransfer.effectAllowed = 'move';
@@ -76,7 +79,7 @@ export const Tabs: React.FC<TabsProps> = ({
     setDragOverIndex(null);
   };
 
-  // ИСПРАВЛЕНИЕ 2.26: Обработка средней кнопки мыши
+  // Обработка средней кнопки мыши
   const handleMiddleClick = (e: React.MouseEvent, tabId: string) => {
     if (e.button === 1) {
       e.preventDefault();
@@ -84,7 +87,7 @@ export const Tabs: React.FC<TabsProps> = ({
     }
   };
 
-  // ИСПРАВЛЕНИЕ 3.44: preventDefault для Firefox auto-scroll
+  // preventDefault для Firefox auto-scroll
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault();
@@ -93,14 +96,15 @@ export const Tabs: React.FC<TabsProps> = ({
 
   return (
     <div className="h-[32px] bg-[#1e1e1e] border-b border-[rgba(255,255,255,0.08)] flex items-end px-2 shrink-0">
-      <div 
+      <div
         ref={tabsContainerRef}
         className="flex-1 flex items-end gap-0.5 overflow-x-auto scrollbar-hide"
       >
         {tabs.map((tab, index) => {
           const isActive = tab.id === activeTabId;
           const isDragOver = dragOverIndex === index;
-          
+          const hasUnsaved = unsavedTabIds?.has(tab.id) ?? false;
+
           return (
             <div
               key={tab.id}
@@ -112,23 +116,29 @@ export const Tabs: React.FC<TabsProps> = ({
               onDragEnd={handleDragEnd}
               onMouseDown={handleMouseDown}
               onMouseUp={(e) => handleMiddleClick(e, tab.id)}
-              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer transition-all border-t-2 min-w-[120px] max-w-[200px] ${
-                isActive
+              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer transition-all border-t-2 min-w-[120px] max-w-[200px] ${isActive
                   ? 'bg-[#252525] border-t-indigo-500 text-gray-200'
                   : isDragOver
-                  ? 'bg-[#2d2d2d] border-t-gray-500 text-gray-400'
-                  : 'bg-[#1e1e1e] border-t-transparent text-gray-500 hover:bg-[#252525] hover:text-gray-300'
-              }`}
+                    ? 'bg-[#2d2d2d] border-t-gray-500 text-gray-400'
+                    : 'bg-[#1e1e1e] border-t-transparent text-gray-500 hover:bg-[#252525] hover:text-gray-300'
+                }`}
               onClick={() => onTabClick(tab.id)}
             >
-              {/* ИСПРАВЛЕНИЕ 3.42: Используем getMethodColor вместо локальных констант */}
               <span className={`font-bold text-[10px] ${getMethodColor(tab.request.method)}`}>
                 {tab.request.method}
               </span>
-              
+
               <span className="flex-1 truncate">
                 {tab.request.name || 'Untitled'}
               </span>
+
+              {/* ✅ Индикатор несохранённых изменений */}
+              {hasUnsaved && !tab.loading && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+                  title="Есть несохранённые изменения"
+                />
+              )}
 
               {tab.loading && (
                 <div className="w-3 h-3 border-2 border-gray-500 border-t-indigo-500 rounded-full animate-spin"></div>

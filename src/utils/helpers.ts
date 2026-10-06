@@ -15,7 +15,6 @@ export const generateId = (): string => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  // Fallback для старых браузеров
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 };
 
@@ -349,3 +348,161 @@ export const convertPostmanCollectionToApp = (data: any): Collection => {
     requests: parsed.requests,
   };
 };
+
+// ============ Fuzzy Search (триграммы) ============
+
+/**
+ * Разбивает строку на триграммы (3-символьные последовательности).
+ * Нормализует: приводит к нижнему регистру, заменяет множественные пробелы.
+ */
+export function trigrams(s: string): Set<string> {
+  const normalized = ' ' + s.toLowerCase().replace(/\s+/g, ' ').trim() + ' ';
+  const result = new Set<string>();
+  for (let i = 0; i < normalized.length - 2; i++) {
+    result.add(normalized.slice(i, i + 3));
+  }
+  return result;
+}
+
+/**
+ * Коэффициент Жаккара для триграмм: |A ∩ B| / |A ∪ B|.
+ * Возвращает 0..1.
+ */
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  a.forEach((t) => { if (b.has(t)) intersection++; });
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Оценка схожести поискового запроса с целевой строкой.
+ * Возвращает score >= 0 (чем больше, тем лучше).
+ *
+ * Логика:
+ * - Точное совпадение строки — 1000
+ * - Совпадение с начала — 500+
+ * - Подстрока — 200+
+ * - Fuzzy по триграммам (Jaccard >= 0.3) — 30..100
+ */
+export function fuzzyScore(query: string, target: string): number {
+  if (!query || !target) return 0;
+  const q = query.toLowerCase().trim();
+  const t = target.toLowerCase();
+
+  if (t === q) return 1000;
+
+  if (t.startsWith(q)) return 500 + q.length * 2;
+
+  const idx = t.indexOf(q);
+  if (idx >= 0) {
+    return 200 + (1 - idx / t.length) * 100 + q.length * 2;
+  }
+
+  const qTri = trigrams(q);
+  const tTri = trigrams(t);
+  const sim = jaccard(qTri, tTri);
+
+  if (sim < 0.3) return 0;
+
+  return sim * 100;
+}
+
+/**
+ * Результат поиска по запросам.
+ */
+export interface RequestSearchResult {
+  collectionId: string;
+  collectionName: string;
+  folderId: string | null;
+  folderPath: string;
+  request: HttpRequest;
+  score: number;
+  matchedField: 'request' | 'collection' | 'folder';
+}
+
+/**
+ * Рекурсивно собирает запросы из дерева папок.
+ */
+function collectRequests(
+  folders: CollectionFolder[],
+  collectionId: string,
+  collectionName: string,
+  parentPath: string,
+  results: RequestSearchResult[]
+): void {
+  for (const folder of folders) {
+    const folderPath = parentPath ? `${parentPath} / ${folder.name}` : folder.name;
+    for (const req of folder.requests) {
+      results.push({
+        collectionId,
+        collectionName,
+        folderId: folder.id,
+        folderPath,
+        request: req,
+        score: 0,
+        matchedField: 'request',
+      });
+    }
+    collectRequests(folder.folders, collectionId, collectionName, folderPath, results);
+  }
+}
+
+/**
+ * Полнотекстовый fuzzy-поиск по запросам.
+ * Ищет в: имени запроса, URL, методе, имени коллекции, пути папки.
+ * Возвращает отсортированный по score список (top `limit`).
+ */
+export function searchRequests(
+  collections: Collection[],
+  query: string,
+  limit: number = 20
+): RequestSearchResult[] {
+  if (!query || query.trim().length < 3) return [];
+  const q = query.trim();
+
+  const allRequests: RequestSearchResult[] = [];
+
+  for (const collection of collections) {
+    for (const req of collection.requests) {
+      allRequests.push({
+        collectionId: collection.id,
+        collectionName: collection.name,
+        folderId: null,
+        folderPath: '',
+        request: req,
+        score: 0,
+        matchedField: 'request',
+      });
+    }
+    collectRequests(collection.folders, collection.id, collection.name, '', allRequests);
+  }
+
+  const scored = allRequests
+    .map((item) => {
+      const nameScore = fuzzyScore(q, item.request.name);
+      const urlScore = fuzzyScore(q, item.request.url);
+      const methodScore = fuzzyScore(q, item.request.method) * 0.3;
+      const collectionScore = fuzzyScore(q, item.collectionName) * 0.5;
+      const folderScore = item.folderPath ? fuzzyScore(q, item.folderPath) * 0.5 : 0;
+
+      const best = Math.max(nameScore, urlScore, methodScore, collectionScore, folderScore);
+      if (best === 0) return null;
+
+      let matchedField: 'request' | 'collection' | 'folder' = 'request';
+      if (best === collectionScore && collectionScore > nameScore) matchedField = 'collection';
+      else if (best === folderScore && folderScore > nameScore) matchedField = 'folder';
+
+      return {
+        ...item,
+        score: best + nameScore * 0.3,
+        matchedField,
+      };
+    })
+    .filter((x): x is RequestSearchResult => x !== null)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  return scored;
+}

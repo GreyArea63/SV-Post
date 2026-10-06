@@ -11,15 +11,19 @@ import { generateId } from './helpers';
 // ✅ КРИТИЧНО: конструктор асинхронных функций — поддерживает await
 const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
 
+const DEFAULT_SEND_TIMEOUT = 30000;
+
 /**
  * ScriptRunner — безопасное выполнение Pre-request Scripts и Tests
  * в изолированной песочнице с Postman-совместимым API (pm.*)
  *
  * Особенности:
  * - pm.sendRequest поддерживает Postman-формат (header/body.mode/body.raw) и резолвит {{var}}
+ * - pm.sendRequest поддерживает опции timeout / followRedirects / proxy
  * - pm.retryRequest() ставит флаг (НЕ бросает исключение), как в Postman
+ * - pm.execution.setNextRequest(name) — управление потоком в Runner
  * - pm.skipRequest() бросает __SKIP_REQUEST__ (прерывает скрипт)
- * - pm.expect(...).to.eql(...) — добавлен алиас toEqual
+ * - pm.expect(...).to.eql(...) — алиас toEqual
  */
 export class ScriptRunner {
   private context: ScriptContext;
@@ -30,6 +34,7 @@ export class ScriptRunner {
   private environment: Record<string, string>;
   private globals: Record<string, string>;
   private retryRequested = false;
+  private nextRequestName: string | null | undefined = undefined;
 
   constructor(context: ScriptContext) {
     this.context = context;
@@ -50,7 +55,6 @@ export class ScriptRunner {
         id: 'e_' + key, key, value, enabled: true,
       })),
     ];
-    // Сортируем по длине ключа (длинные первыми) для корректной замены
     const sorted = [...vars].sort((a, b) => b.key.length - a.key.length);
     let result = text;
     sorted.forEach((v) => {
@@ -61,9 +65,6 @@ export class ScriptRunner {
     return result;
   }
 
-  /**
-   * Резолвит {{var}} во всех строковых значениях объекта (1 уровень вложенности)
-   */
   private resolveVarsInObject(obj: Record<string, any>): Record<string, any> {
     const result: Record<string, any> = {};
     Object.entries(obj).forEach(([k, v]) => {
@@ -72,9 +73,6 @@ export class ScriptRunner {
     return result;
   }
 
-  /**
-   * Резолвит {{var}} в body для Postman-формата
-   */
   private resolveBodyVars(body: any): any {
     if (!body || typeof body !== 'object') {
       return typeof body === 'string' ? this.resolveVars(body) : body;
@@ -120,8 +118,8 @@ export class ScriptRunner {
           if (value !== expected) throw new Error(`Expected ${JSON.stringify(expected)} but got ${JSON.stringify(value)}`);
         },
         toEqual: toEqualImpl,
-        eql: toEqualImpl, // ✅ алиас
-        toEql: toEqualImpl, // ✅ алиас
+        eql: toEqualImpl,
+        toEql: toEqualImpl,
         toBeTruthy: () => { if (!value) throw new Error(`Expected truthy value but got ${JSON.stringify(value)}`); },
         toBeFalsy: () => { if (value) throw new Error(`Expected falsy value but got ${JSON.stringify(value)}`); },
         toBeDefined: () => { if (value === undefined) throw new Error('Expected defined value but got undefined'); },
@@ -180,8 +178,8 @@ export class ScriptRunner {
               if (actualType !== type) throw new Error(`Expected type "${type}" but got "${actualType}"`);
             },
           },
-          eql: toEqualImpl, // ✅ pm.expect(x).to.eql(y)
-          equal: toEqualImpl, // ✅ pm.expect(x).to.equal(y)
+          eql: toEqualImpl,
+          equal: toEqualImpl,
         },
       };
     };
@@ -320,6 +318,15 @@ export class ScriptRunner {
 
       iterationData: self.context.iterationData || {},
 
+      // ✅ pm.execution.setNextRequest — управление потоком в Runner
+      execution: {
+        setNextRequest: (name: string | null) => {
+          self.nextRequestName = name;
+          self.logs.push(`[pm.execution.setNextRequest] → ${name === null ? '(stop)' : name}`);
+        },
+        skipRequest: () => { throw new Error('__SKIP_REQUEST__'); },
+      },
+
       test: (name: string, fn: () => void) => {
         try {
           fn();
@@ -343,32 +350,50 @@ export class ScriptRunner {
         requestName: '', requestId: '',
       },
 
-      // ✅ skipRequest — бросает, чтобы прервать скрипт (правильно)
       skipRequest: () => { throw new Error('__SKIP_REQUEST__'); },
 
-      // ✅ sendRequest — Postman-совместимый
       sendRequest: async (req: any, callback?: (error: any, response: any) => void) => {
         try {
-          // 1. Alias: header → headers (Postman использует header)
           const rawHeaders = req.header || req.headers || {};
 
-          // 2. Резолв переменных в URL и headers
           const resolvedUrl = self.resolveVars(req.url || '');
           const resolvedHeaders = self.resolveVarsInObject(rawHeaders);
+
+          // ✅ Timeout: из req.timeout, иначе дефолт
+          const timeout = typeof req.timeout === 'number' && req.timeout > 0
+            ? req.timeout
+            : DEFAULT_SEND_TIMEOUT;
 
           const config: any = {
             method: (req.method || 'GET').toLowerCase(),
             url: resolvedUrl,
             headers: resolvedHeaders,
-            timeout: 30000,
+            timeout,
           };
 
-          // 3. Обработка body с поддержкой Postman-формата
+          // ✅ followRedirects → maxRedirects
+          if (typeof req.followRedirects === 'boolean') {
+            config.maxRedirects = req.followRedirects ? 5 : 0;
+          }
+
+          // ✅ proxy
+          if (typeof req.proxy === 'string' && req.proxy) {
+            try {
+              const proxyUrl = new URL(req.proxy);
+              config.proxy = {
+                protocol: proxyUrl.protocol.replace(':', ''),
+                host: proxyUrl.hostname,
+                port: parseInt(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80),
+              };
+            } catch {
+              self.logs.push(`[pm.sendRequest] Invalid proxy URL: ${req.proxy}`);
+            }
+          }
+
           if (req.body) {
             const body = self.resolveBodyVars(req.body);
 
             if (typeof body === 'string') {
-              // Строка — пытаемся распарсить как JSON, иначе шлём как есть
               try {
                 config.data = JSON.parse(body);
                 config.headers = { ...config.headers, 'Content-Type': 'application/json' };
@@ -376,7 +401,6 @@ export class ScriptRunner {
                 config.data = body;
               }
             } else if (typeof body === 'object' && body !== null && typeof body.mode === 'string') {
-              // Postman-формат: { mode, raw, urlencoded, formdata, graphql }
               switch (body.mode) {
                 case 'raw': {
                   const raw = body.raw || '';
@@ -402,7 +426,6 @@ export class ScriptRunner {
                   (body.formdata || []).forEach((f: any) => {
                     if (f.disabled !== true && f.key) {
                       if (f.type === 'file' && f.src) {
-                        // В песочнице файлы недоступны — пропускаем
                         self.logs.push(`[pm.sendRequest] formdata file skipped: ${f.key}`);
                       } else {
                         fd.append(f.key, f.value ?? '');
@@ -410,7 +433,6 @@ export class ScriptRunner {
                     }
                   });
                   config.data = fd;
-                  // НЕ ставим Content-Type — браузер сам с boundary
                   break;
                 }
                 case 'graphql': {
@@ -432,7 +454,6 @@ export class ScriptRunner {
                 }
               }
             } else {
-              // Обычный объект или массив — шлём как JSON
               config.data = body;
               config.headers = { ...config.headers, 'Content-Type': 'application/json' };
             }
@@ -500,7 +521,6 @@ export class ScriptRunner {
         }
       },
 
-      // ✅ retryRequest — ставит флаг, НЕ бросает (как в Postman)
       retryRequest: () => {
         self.retryRequested = true;
         self.logs.push('[pm.retryRequest] Флаг повторного запроса установлен');
@@ -512,7 +532,6 @@ export class ScriptRunner {
       responseBody: responseBody ?? '',
     };
 
-    // ✅ АЛИАС pm.env → pm.environment
     pmObject.env = pmObject.environment;
 
     return pmObject;
@@ -547,6 +566,7 @@ export class ScriptRunner {
         testResults: this.testResults,
         logs: this.logs,
         retry: this.retryRequested || undefined,
+        nextRequest: this.nextRequestName,
       };
     } catch (error: any) {
       if (error?.message === '__SKIP_REQUEST__') {
@@ -557,6 +577,7 @@ export class ScriptRunner {
           logs: this.logs,
           skipped: true,
           retry: this.retryRequested || undefined,
+          nextRequest: this.nextRequestName,
         };
       }
       return {
@@ -566,6 +587,7 @@ export class ScriptRunner {
         logs: this.logs,
         error: error?.message || 'Script execution failed',
         retry: this.retryRequested || undefined,
+        nextRequest: this.nextRequestName,
       };
     }
   }
@@ -573,12 +595,6 @@ export class ScriptRunner {
 
 /**
  * Подставляет {{var}} в текст скрипта — с санитайзом значений.
- *
- * Если значение содержит символы, опасные для JS-кода (' " ` \ $ { } ; ( ) и переводы строк),
- * такая переменная НЕ подставляется — остаётся literal {{var}}, чтобы пользователь
- * использовал pm.environment.get("var") явно.
- *
- * Это защищает от поломки скрипта значениями со спецсимволами (например, JWT-токенами).
  */
 export function replaceVariablesInScript(script: string, variables: KeyValuePair[]): string {
   if (!script) return script;
@@ -591,9 +607,8 @@ export function replaceVariablesInScript(script: string, variables: KeyValuePair
     .sort((a, b) => b.key.length - a.key.length);
 
   sortedVars.forEach((variable) => {
-    // Санитайз: пропускаем значения с опасными символами
     if (DANGEROUS.test(variable.value)) {
-      return; // оставляем {{var}} literal — пользователь должен использовать pm.environment.get
+      return;
     }
     const escapedKey = variable.key.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`\\{\\{${escapedKey}\\}\\}`, 'g');

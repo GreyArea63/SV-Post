@@ -43,9 +43,6 @@ interface CollectionRunnerProps {
   onError?: (message: string) => void;
 }
 
-// ✅ In-memory override переменных в рамках Runner.
-// Изменения pm.environment.set / pm.globals.set применяются на лету,
-// как в Postman с опцией "Keep variable values".
 interface RunnerVars {
   env: Record<string, string>;
   globals: Record<string, string>;
@@ -60,10 +57,6 @@ const emptyVars = (): RunnerVars => ({
   globalsUnset: new Set(),
 });
 
-/**
- * Строит итоговый список переменных: env + globals + data-строка,
- * с учётом override от скриптов (pm.environment.set/unset).
- */
 const buildVariables = (
   baseEnv: KeyValuePair[],
   baseGlobals: KeyValuePair[],
@@ -72,7 +65,6 @@ const buildVariables = (
 ): KeyValuePair[] => {
   const result: KeyValuePair[] = [];
 
-  // globals
   baseGlobals
     .filter(v => v.enabled)
     .forEach(v => {
@@ -80,14 +72,12 @@ const buildVariables = (
       const value = overrides.globals[v.key] ?? v.value;
       result.push({ ...v, value });
     });
-  // новые globals из скрипта
   Object.entries(overrides.globals).forEach(([key, value]) => {
     if (!result.find(v => v.key === key) && !overrides.globalsUnset.has(key)) {
       result.push({ id: 'script_g_' + key, key, value, enabled: true });
     }
   });
 
-  // env
   baseEnv
     .filter(v => v.enabled)
     .forEach(v => {
@@ -101,7 +91,6 @@ const buildVariables = (
     }
   });
 
-  // data vars — приоритет выше env/globals (как в Postman)
   dataVars.forEach(v => {
     const idx = result.findIndex(r => r.key === v.key);
     if (idx >= 0) result[idx] = { ...result[idx], value: v.value };
@@ -111,9 +100,6 @@ const buildVariables = (
   return result;
 };
 
-/**
- * Сливает changes из ScriptExecutionResult в RunnerVars.
- */
 const mergeChanges = (vars: RunnerVars, result: ScriptExecutionResult | null): RunnerVars => {
   if (!result) return vars;
   const next: RunnerVars = {
@@ -133,9 +119,10 @@ const mergeChanges = (vars: RunnerVars, result: ScriptExecutionResult | null): R
   return next;
 };
 
-// ИСПРАВЛЕНИЕ 3.25: ограничение результатов
 const MAX_RESULTS = 1000;
 const MAX_SCRIPT_RETRIES = 2;
+/** ✅ Лимит переходов по setNextRequest на одну итерацию — защита от зацикливания */
+const MAX_FLOW_JUMPS = 100;
 
 const HTTP_ERROR_DESCRIPTIONS: Record<number, { title: string; description: string; solution: string }> = {
   400: { title: 'Bad Request — Неверный запрос', description: 'Сервер не может обработать запрос из-за синтаксической ошибки.', solution: 'Проверьте правильность JSON-структуры и формат данных.' },
@@ -211,7 +198,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     }
   }, [iterations, parsedData]);
 
-  // ИСПРАВЛЕНИЕ 3.45: clearTimeout для уведомлений
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     return () => {
@@ -252,10 +238,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     }
   };
 
-  /**
-   * Выполняет скрипт (pre-request / test) через ScriptRunner.
-   * Возвращает результат или null.
-   */
   const runScript = useCallback(async (
     scriptType: 'preRequest' | 'test',
     script: string,
@@ -277,7 +259,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     }
     if (!finalScript.trim()) return null;
 
-    // Резолв {{var}} для pm.request.headers
     const allVars = [...globals, ...envVars, ...dataVars];
 
     const requestHeaders: Record<string, string> = {};
@@ -323,9 +304,10 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     const totalRequests = requests.length;
     const effectiveIterations = dataRows.length;
 
-    // ✅ In-memory переменные Runner'а (переживают все итерации)
     let runnerVars = emptyVars();
 
+    // ============ ИТЕРАЦИИ ============
+    iterationLoop:
     for (let i = 0; i < effectiveIterations; i++) {
       if (isCancelledRef.current) break;
 
@@ -335,25 +317,42 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
         id: generateId(), key, value: String(value), enabled: true,
       }));
 
-      for (let j = 0; j < totalRequests; j++) {
+      // ============ ЗАПРОСЫ (с поддержкой setNextRequest) ============
+      let j = 0;
+      let flowJumps = 0;
+
+      while (j < totalRequests) {
         if (isCancelledRef.current) break;
+
+        if (flowJumps > MAX_FLOW_JUMPS) {
+          const newResult: RunResult = {
+            iteration: i + 1,
+            requestIndex: j,
+            requestName: requests[j]?.name || '?',
+            status: 'Flow Error',
+            success: false,
+            time: 0,
+            error: `Превышен лимит переходов (${MAX_FLOW_JUMPS}). Проверьте pm.execution.setNextRequest — возможен цикл.`,
+          };
+          setResults(prev => {
+            const updated = [...prev, newResult];
+            return updated.length > MAX_RESULTS ? updated.slice(-MAX_RESULTS) : updated;
+          });
+          break;
+        }
 
         const req = requests[j];
 
-        // ✅ Собираем актуальный список переменных (с учётом override от скриптов)
-        const allVariables = buildVariables(baseEnvVars, baseGlobals, dataVars, runnerVars);
-
-        // === PRE-REQUEST LOOP (с поддержкой retry) ===
+        // === PRE-REQUEST + REQUEST + TEST с retry ===
         let attempt = 0;
         let accumulatedLogs: string[] = [];
         let skipThisRequest = false;
-        let lastHttpResponse: HttpResponse | null = null;
-        let lastTestResult: ScriptExecutionResult | null = null;
+        let nextRequestDirective: string | null | undefined = undefined;
 
         while (attempt <= MAX_SCRIPT_RETRIES) {
           const startTime = Date.now();
 
-          // 1. Pre-request script
+          // 1. Pre-request
           let preRequestResult: ScriptExecutionResult | null = null;
           if (req.scripts?.preRequest?.trim()) {
             preRequestResult = await runScript(
@@ -417,7 +416,7 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
             }
           }
 
-          // 2. Формируем и шлём запрос с актуальными переменными (включая изменения из pre-request)
+          // 2. Формируем и шлём запрос
           const liveVars = buildVariables(baseEnvVars, baseGlobals, dataVars, runnerVars);
 
           try {
@@ -447,7 +446,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
 
             const headers = parseKeyValuePairs(processedReq.headers);
 
-            // Auth
             if (processedReq.auth) {
               const removeH = (name: string) => {
                 const lower = name.toLowerCase();
@@ -524,7 +522,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               time: Date.now() - startTime,
               size: new Blob([JSON.stringify(axiosResponse.data)]).size,
             };
-            lastHttpResponse = httpResponse;
 
             // 3. Test script
             let testResult: ScriptExecutionResult | null = null;
@@ -542,9 +539,11 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                 effectiveIterations
               );
               if (testResult) {
-                lastTestResult = testResult;
                 accumulatedLogs = [...accumulatedLogs, ...(testResult.logs || [])];
                 runnerVars = mergeChanges(runnerVars, testResult);
+                if (testResult.nextRequest !== undefined) {
+                  nextRequestDirective = testResult.nextRequest;
+                }
               }
             }
 
@@ -555,10 +554,10 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               if (delay > 0 && !isCancelledRef.current) {
                 await new Promise(r => setTimeout(r, delay));
               }
-              continue; // → перезапуск pre-request с обновлённым токеном
+              continue;
             }
 
-            // 5. Финализация результата
+            // 5. Финализация
             const newResult: RunResult = {
               iteration: i + 1,
               requestIndex: j,
@@ -580,7 +579,7 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               const updated = [...prev, newResult];
               return updated.length > MAX_RESULTS ? updated.slice(-MAX_RESULTS) : updated;
             });
-            break; // выходим из retry-цикла, переходим к след. запросу
+            break;
 
           } catch (err: any) {
             if (axios.isCancel(err)) { skipThisRequest = true; break; }
@@ -594,9 +593,7 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                 time: Date.now() - startTime,
                 size: new Blob([JSON.stringify(err.response.data)]).size,
               };
-              lastHttpResponse = httpResponse;
 
-              // Test script на ошибочном статусе (например, 401)
               let testResult: ScriptExecutionResult | null = null;
               const hasTestScript = req.scripts?.test?.trim() || activeEnv?.globalTestScript?.trim();
               if (hasTestScript) {
@@ -612,9 +609,11 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                   effectiveIterations
                 );
                 if (testResult) {
-                  lastTestResult = testResult;
                   accumulatedLogs = [...accumulatedLogs, ...(testResult.logs || [])];
                   runnerVars = mergeChanges(runnerVars, testResult);
+                  if (testResult.nextRequest !== undefined) {
+                    nextRequestDirective = testResult.nextRequest;
+                  }
                 }
               }
 
@@ -666,7 +665,7 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               break;
             }
 
-            // Network error — без response
+            // Network error
             const processedReqForError = {
               ...req,
               url: replaceVariables(req.url, liveVars),
@@ -706,12 +705,37 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
 
         if (skipThisRequest && isCancelledRef.current) break;
 
-        // Задержка между запросами
+        // ============ ✅ ОБРАБОТКА setNextRequest ============
+        if (nextRequestDirective === null) {
+          // null → остановить всю цепочку (все итерации)
+          accumulatedLogs.push('[pm.execution.setNextRequest] Остановка цепочки');
+          break iterationLoop;
+        } else if (typeof nextRequestDirective === 'string') {
+          const nextIdx = requests.findIndex(r => r.name === nextRequestDirective);
+          if (nextIdx >= 0) {
+            accumulatedLogs.push(`[pm.execution.setNextRequest] Переход к "${nextRequestDirective}" (индекс ${nextIdx})`);
+            j = nextIdx;
+            flowJumps++;
+            // Задержка + не continue через обычный инкремент
+            if (delay > 0 && !isCancelledRef.current) {
+              await new Promise(r => setTimeout(r, delay));
+            } else if (!isCancelledRef.current) {
+              await new Promise(r => setTimeout(r, 0));
+            }
+            continue;
+          } else {
+            accumulatedLogs.push(`[pm.execution.setNextRequest] Запрос "${nextRequestDirective}" не найден — продолжаем последовательно`);
+          }
+        }
+
+        // Обычная задержка и переход к следующему запросу
         if (delay > 0 && !isCancelledRef.current) {
           await new Promise(resolve => setTimeout(resolve, delay));
         } else if (!isCancelledRef.current) {
           await new Promise(resolve => setTimeout(resolve, 0));
         }
+
+        j++;
       }
     }
 
@@ -794,6 +818,7 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                   <p className="text-[10px] text-blue-400 leading-relaxed">
                     💡 Pre-request и Tests скрипты выполняются автоматически на каждой итерации.
                     Изменения переменных через <code className="font-mono">pm.environment.set()</code> сохраняются между итерациями.
+                    Поддерживается <code className="font-mono">pm.execution.setNextRequest()</code> для управления потоком.
                   </p>
                 </div>
 
@@ -866,8 +891,8 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                   key={index}
                   onDoubleClick={() => handleRowDoubleClick(result)}
                   className={`flex items-center gap-3 p-3 rounded-lg border transition-all ${result.success
-                      ? 'bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/10'
-                      : 'bg-red-500/5 border-red-500/20 hover:bg-red-500/10 cursor-pointer'
+                    ? 'bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/10'
+                    : 'bg-red-500/5 border-red-500/20 hover:bg-red-500/10 cursor-pointer'
                     }`}
                   title={!result.success ? 'Двойной клик для подробностей' : ''}
                 >
@@ -1003,8 +1028,8 @@ const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose, co
               key={tab.id}
               onClick={() => setActiveSection(tab.id as any)}
               className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium transition-all ${activeSection === tab.id
-                  ? 'text-gray-200 bg-[#2d2d2d] border-b-2 border-gray-400'
-                  : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                ? 'text-gray-200 bg-[#2d2d2d] border-b-2 border-gray-400'
+                : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
                 }`}
             >
               {tab.icon}

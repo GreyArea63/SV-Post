@@ -54,12 +54,8 @@ interface Toast {
   message: string;
 }
 
-/**
- * Override переменных, полученных из pre-request / test скриптов.
- * Позволяет применить изменения к ТЕКУЩЕМУ запросу, не дожидаясь React setState.
- */
 interface ScriptOverrides {
-  env: Record<string, string>;       // key → value (null означает unset)
+  env: Record<string, string>;
   globals: Record<string, string>;
   envUnset: Set<string>;
   globalsUnset: Set<string>;
@@ -124,9 +120,6 @@ const removeHeaderCaseInsensitive = (headers: Record<string, string>, name: stri
   });
 };
 
-/**
- * Создаёт пустой ScriptOverrides.
- */
 const emptyOverrides = (): ScriptOverrides => ({
   env: {},
   globals: {},
@@ -134,10 +127,6 @@ const emptyOverrides = (): ScriptOverrides => ({
   globalsUnset: new Set(),
 });
 
-/**
- * Сливает изменения из ScriptExecutionResult в overrides.
- * enabled=true → добавить в map; enabled=false → добавить в unset.
- */
 const mergeScriptChanges = (
   overrides: ScriptOverrides,
   result: ScriptExecutionResult | null
@@ -359,7 +348,7 @@ const SaveConfirmModal = memo(({
   onDiscard,
   onCancel,
 }: {
-  action: 'close' | 'switch';
+  action: 'close';
   onConfirm: () => void;
   onDiscard: () => void;
   onCancel: () => void;
@@ -376,9 +365,7 @@ const SaveConfirmModal = memo(({
         </div>
       </div>
       <p className="text-sm text-gray-300 mb-6">
-        {action === 'close'
-          ? 'Вы хотите сохранить изменения перед закрытием вкладки?'
-          : 'Вы хотите сохранить изменения перед переключением вкладки?'}
+        Вы хотите сохранить изменения перед закрытием вкладки?
       </p>
       <div className="flex gap-2 justify-end">
         <button onClick={onCancel} className="px-4 py-2 bg-[#2d2d2d] hover:bg-[#363636] text-gray-300 rounded-lg text-sm font-medium transition-all">
@@ -530,7 +517,7 @@ function App() {
   const [showImportCurl, setShowImportCurl] = useState(false);
   const [runningRequest, setRunningRequest] = useState<{ request: HttpRequest; collectionName: string } | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [showSaveConfirm, setShowSaveConfirm] = useState<{ tabId: string; action: 'close' | 'switch' } | null>(null);
+  const [showSaveConfirm, setShowSaveConfirm] = useState<{ tabId: string; action: 'close' } | null>(null);
   const [showSaveRequestModal, setShowSaveRequestModal] = useState<{ request: HttpRequest; tabId: string } | null>(null);
   const [showNewCollectionModal, setShowNewCollectionModal] = useState(false);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
@@ -547,6 +534,15 @@ function App() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const activeTab = useMemo(() => tabs.find(tab => tab.id === activeTabId), [tabs, activeTabId]);
+
+  /** ✅ Множество вкладок с несохранёнными изменениями — для индикатора на вкладке */
+  const unsavedTabIds = useMemo(() => {
+    const set = new Set<string>();
+    tabs.forEach(tab => {
+      if (hasUnsavedChanges(tab)) set.add(tab.id);
+    });
+    return set;
+  }, [tabs]);
 
   const showToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
     const id = generateId();
@@ -665,13 +661,11 @@ function App() {
     const env = getActiveEnvironment();
     const envVariables = env?.variables || [];
 
-    // Собираем "сырые" переменные (без override)
     const baseVars: KeyValuePair[] = [
       ...globalVariables.filter(g => g.enabled),
       ...envVariables.filter(e => e.enabled),
     ];
 
-    // Применяем override: env и globals поверх
     const withOverrides: KeyValuePair[] = baseVars.map(v => {
       if (overrides) {
         if (v.key in overrides.globals) {
@@ -684,13 +678,11 @@ function App() {
       return v;
     }).filter(v => {
       if (!overrides) return true;
-      // Убираем unset-переменные
       if (overrides.globalsUnset.has(v.key)) return false;
       if (overrides.envUnset.has(v.key)) return false;
       return true;
     });
 
-    // Добавляем НОВЫЕ переменные, которых не было в baseVars, но появились из скриптов
     if (overrides) {
       Object.entries(overrides.globals).forEach(([key, value]) => {
         if (!withOverrides.find(v => v.key === key) && !overrides.globalsUnset.has(key)) {
@@ -728,7 +720,7 @@ function App() {
   }, [getActiveEnvironment, globalVariables]);
 
   // ============================================================
-  // executeScript (использует ScriptRunner с полным контекстом)
+  // executeScript
   // ============================================================
   const executeScript = useCallback(async (
     scriptType: 'preRequest' | 'test',
@@ -777,7 +769,7 @@ function App() {
   }, [getActiveEnvironment, globalVariables]);
 
   // ============================================================
-  // applyScriptChanges — сохраняет изменения в React state + IndexedDB
+  // applyScriptChanges
   // ============================================================
   const applyScriptChanges = useCallback(async (result: ScriptExecutionResult) => {
     if (result.environmentChanges.length > 0) {
@@ -803,7 +795,6 @@ function App() {
           await storage.saveEnvironments(updatedEnvs);
         }
       } else {
-        // Нет активного окружения — предупреждаем пользователя
         showToast('info', 'pm.environment.set проигнорирован: нет активного окружения');
       }
     }
@@ -866,7 +857,7 @@ function App() {
   }, [activeTab, executeScript, showToast, applyScriptChanges]);
 
   // ============================================================
-  // handleSend — ГЛАВНАЯ ФУНКЦИЯ (с override из скриптов)
+  // handleSend
   // ============================================================
   const handleSend = useCallback(async () => {
     if (!activeTab) return;
@@ -882,7 +873,6 @@ function App() {
     let lastTestResult: ScriptExecutionResult | null = null;
 
     while (attempt <= MAX_REQUEST_RETRIES) {
-      // === 1. Pre-request script (перезапускается на каждой итерации, включая retry) ===
       let preRequestResult: ScriptExecutionResult | null = null;
       if (activeTab.request.scripts?.preRequest) {
         preRequestResult = await executeScript(
@@ -920,7 +910,6 @@ function App() {
         }
       }
 
-      // === 2. Формируем запрос с override ===
       try {
         const processedRequest = processRequest(activeTab.request, overrides);
         let url = processedRequest.url;
@@ -1066,7 +1055,6 @@ function App() {
           size: new Blob([JSON.stringify(axiosResponse.data)]).size,
         };
 
-        // === 3. Test script ===
         let testResult: ScriptExecutionResult | null = null;
         if (activeTab.request.scripts?.test || getActiveEnvironment()?.globalTestScript?.trim()) {
           testResult = await executeScript('test', activeTab.request.scripts?.test || '', activeTab.request, httpResponse);
@@ -1077,16 +1065,14 @@ function App() {
           }
         }
 
-        // === 4. Retry? ===
         if (testResult?.retry && attempt < MAX_REQUEST_RETRIES) {
           attempt++;
           console.log(`[Retry] Попытка ${attempt}/${MAX_REQUEST_RETRIES} после pm.retryRequest()`);
           showToast('info', `Обновление токена... повторный запрос (${attempt}/${MAX_REQUEST_RETRIES})`);
           await delay(150);
-          continue; // → pre-request перезапустится на новой итерации
+          continue;
         }
 
-        // === 5. Финализация ===
         setTabs(prevTabs => prevTabs.map(tab =>
           tab.id === activeTabId ? {
             ...tab,
@@ -1197,13 +1183,12 @@ function App() {
     }
   }, [activeTab, activeTabId, processRequest, history, showToast, executeScript, applyScriptChanges, getActiveEnvironment]);
 
+  // ============================================================
+  // ✅ Переключение вкладки — БЕЗ запроса сохранения
+  // ============================================================
   const handleTabClick = useCallback((tabId: string) => {
-    if (activeTab && hasUnsavedChanges(activeTab) && tabId !== activeTabId) {
-      setShowSaveConfirm({ tabId, action: 'switch' });
-    } else {
-      setActiveTabId(tabId);
-    }
-  }, [activeTab, activeTabId]);
+    setActiveTabId(tabId);
+  }, []);
 
   const performTabClose = useCallback((tabId: string, currentTabs: Tab[]) => {
     const newTabs = currentTabs.filter(tab => tab.id !== tabId);
@@ -1224,6 +1209,9 @@ function App() {
     return newTabs;
   }, [activeTabId]);
 
+  // ============================================================
+  // ✅ Закрытие вкладки — С запросом сохранения (как Postman)
+  // ============================================================
   const handleTabClose = useCallback((tabId: string) => {
     const tabToClose = tabs.find(t => t.id === tabId);
     if (tabToClose && hasUnsavedChanges(tabToClose)) {
@@ -1368,21 +1356,13 @@ function App() {
   const handleConfirmSave = useCallback(() => {
     if (!showSaveConfirm) return;
     handleSaveCurrentTab();
-    if (showSaveConfirm.action === 'close') {
-      setTabs(prev => performTabClose(showSaveConfirm.tabId, prev));
-    } else if (showSaveConfirm.action === 'switch') {
-      setActiveTabId(showSaveConfirm.tabId);
-    }
+    setTabs(prev => performTabClose(showSaveConfirm.tabId, prev));
     setShowSaveConfirm(null);
   }, [showSaveConfirm, handleSaveCurrentTab, performTabClose]);
 
   const handleDiscardChanges = useCallback(() => {
     if (!showSaveConfirm) return;
-    if (showSaveConfirm.action === 'close') {
-      setTabs(prev => performTabClose(showSaveConfirm.tabId, prev));
-    } else if (showSaveConfirm.action === 'switch') {
-      setActiveTabId(showSaveConfirm.tabId);
-    }
+    setTabs(prev => performTabClose(showSaveConfirm.tabId, prev));
     setShowSaveConfirm(null);
   }, [showSaveConfirm, performTabClose]);
 
@@ -2083,10 +2063,14 @@ function App() {
     showToast('success', `Импортирован запрос: ${request.method} ${request.url}`);
   }, [activeTab, activeTabId, tabs.length, showToast]);
 
+  // ============================================================
+  // ✅ ГЛОБАЛЬНЫЕ ГОРЯЧИЕ КЛАВИШИ (capture — работает везде, включая Monaco)
+  // ============================================================
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
+        e.stopPropagation();
         handleSaveCurrentTab();
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -2118,8 +2102,9 @@ function App() {
         setActiveTabId(tabs[prevIndex].id);
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    // capture: true — перехватываем раньше Monaco/textarea
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [activeTab, activeTabId, tabs, handleSend, handleNewTab, handleTabClose, handleSaveCurrentTab]);
 
   useEffect(() => {
@@ -2177,6 +2162,7 @@ function App() {
             onTabClose={handleTabClose}
             onNewTab={handleNewTab}
             onTabsReorder={setTabs}
+            unsavedTabIds={unsavedTabIds}
           />
           <div className="flex-1 flex flex-col overflow-hidden" ref={containerRef}>
             <div className="flex flex-col min-h-0" style={{ height: `${requestHeight}%` }}>

@@ -1,7 +1,10 @@
 import { useState, useMemo, useCallback, useRef, useEffect, memo } from 'react';
-import { Folder, FolderOpen, Clock, Plus, ChevronRight, ChevronDown, Play, Trash2, Search, GripVertical, Pencil, Copy } from 'lucide-react';
+import {
+  Folder, FolderOpen, Clock, Plus, ChevronRight, ChevronDown, Play,
+  Trash2, Search, GripVertical, Pencil, Copy, X,
+} from 'lucide-react';
 import { Collection, CollectionFolder, HistoryItem, HttpRequest } from '../types';
-import { formatDate } from '../utils/helpers';
+import { formatDate, searchRequests, RequestSearchResult } from '../utils/helpers';
 import { getMethodColor } from '../utils/methodColors';
 
 interface SidebarProps {
@@ -36,6 +39,8 @@ type DraggedItem = {
   collectionId: string;
   folderId: string | null;
 };
+
+const MIN_SEARCH_LENGTH = 3;
 
 // ============================================================
 // HELPER FUNCTIONS
@@ -468,6 +473,70 @@ const ContextMenu = memo(({ x, y, items, onClose }: ContextMenuProps) => {
 ContextMenu.displayName = 'ContextMenu';
 
 // ============================================================
+// SEARCH RESULTS (плоский список)
+// ============================================================
+const SearchResults = memo(({
+  results,
+  query,
+  onSelect,
+  onRun,
+}: {
+  results: RequestSearchResult[];
+  query: string;
+  onSelect: (collectionId: string, requestId: string, folderId?: string) => void;
+  onRun: (request: HttpRequest, collectionName: string) => void;
+}) => {
+  if (results.length === 0) {
+    return (
+      <div className="text-center py-8 text-xs text-gray-500">
+        <Search size={32} className="mx-auto mb-2 opacity-30" />
+        <p>Ничего не найдено по запросу</p>
+        <p className="text-[10px] mt-1 text-gray-600 font-mono">"{query}"</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="px-2 pb-1 text-[10px] text-gray-500 uppercase tracking-wider font-semibold">
+        Найдено: {results.length}
+      </div>
+      {results.map((item) => (
+        <div
+          key={`${item.collectionId}-${item.folderId || 'root'}-${item.request.id}`}
+          className="group relative flex items-start gap-2 px-2 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg transition-all cursor-pointer"
+          onClick={() => onSelect(item.collectionId, item.request.id, item.folderId || undefined)}
+          title={`${item.request.name}\n\n${item.request.method} ${item.request.url || '—'}\n\n${item.collectionName}${item.folderPath ? ' / ' + item.folderPath : ''}`}
+        >
+          <span className={`font-bold text-[10px] w-10 shrink-0 mt-0.5 ${getMethodColor(item.request.method)}`}>
+            {item.request.method}
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="truncate text-gray-200">{item.request.name}</div>
+            <div className="truncate text-[10px] text-gray-500">
+              {item.collectionName}
+              {item.folderPath && <span className="text-gray-600"> / {item.folderPath}</span>}
+            </div>
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRun(item.request, item.collectionName);
+            }}
+            className="p-1 text-gray-500 hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-all opacity-0 group-hover:opacity-100 shrink-0"
+            aria-label="Запустить в Runner"
+            title="Запустить в Runner"
+          >
+            <Play size={12} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+});
+SearchResults.displayName = 'SearchResults';
+
+// ============================================================
 // COLLECTION ITEM
 // ============================================================
 const CollectionItem = memo(({
@@ -692,6 +761,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
     items: { label: string; icon: React.ReactNode; onClick: () => void; danger?: boolean }[];
   } | null>(null);
 
+  // ✅ Fuzzy-поиск по коллекциям (активируется с 3 символов)
+  const searchResults = useMemo(() => {
+    if (activeTab !== 'collections') return [];
+    if (searchQuery.trim().length < MIN_SEARCH_LENGTH) return [];
+    return searchRequests(collections, searchQuery, 20);
+  }, [collections, searchQuery, activeTab]);
+
+  const isSearchActive = activeTab === 'collections'
+    && searchQuery.trim().length >= MIN_SEARCH_LENGTH;
+
   const toggleCollection = useCallback((id: string) => {
     setExpandedCollections(prev => {
       const n = new Set(prev);
@@ -709,9 +788,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, []);
 
   const isExpanded = useCallback((collectionId: string) => {
-    if (searchQuery) return true;
     return expandedCollections.has(collectionId);
-  }, [searchQuery, expandedCollections]);
+  }, [expandedCollections]);
 
   // Drag & Drop
   const handleDragStartRequest = useCallback((
@@ -976,6 +1054,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     );
   }, [history, searchQuery]);
 
+  const searchPlaceholder = activeTab === 'collections'
+    ? 'Поиск (мин. 3 символа)...'
+    : 'Поиск по истории...';
+
   return (
     <div className="w-72 bg-[#1e1e1e] border-r border-[rgba(255,255,255,0.08)] flex flex-col h-full">
       <div className="flex border-b border-[rgba(255,255,255,0.08)]">
@@ -1008,65 +1090,90 @@ export const Sidebar: React.FC<SidebarProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Поиск..."
-            className="w-full pl-9 pr-3 py-1.5 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg text-xs text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-gray-500 focus:ring-1 focus:ring-gray-500/20"
+            placeholder={searchPlaceholder}
+            className="w-full pl-9 pr-8 py-1.5 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg text-xs text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-gray-500 focus:ring-1 focus:ring-gray-500/20"
           />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-gray-500 hover:text-gray-300 rounded transition-all"
+              aria-label="Очистить поиск"
+            >
+              <X size={12} />
+            </button>
+          )}
         </div>
+        {activeTab === 'collections' && searchQuery.length > 0 && searchQuery.trim().length < MIN_SEARCH_LENGTH && (
+          <p className="text-[10px] text-gray-600 mt-1.5">
+            Введите ещё {MIN_SEARCH_LENGTH - searchQuery.trim().length} символ(а)
+          </p>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'collections' && (
           <div className="p-2">
-            <button
-              onClick={onAddCollection}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg transition-all mb-3"
-            >
-              <Plus size={14} />
-              Новая коллекция
-            </button>
+            {isSearchActive ? (
+              <SearchResults
+                results={searchResults}
+                query={searchQuery}
+                onSelect={onSelectRequest}
+                onRun={onRunRequest}
+              />
+            ) : (
+              <>
+                <button
+                  onClick={onAddCollection}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 rounded-lg transition-all mb-3"
+                >
+                  <Plus size={14} />
+                  Новая коллекция
+                </button>
 
-            <div className="space-y-1">
-              {collections.map(collection => (
-                <CollectionItem
-                  key={collection.id}
-                  collection={collection}
-                  isExpanded={isExpanded(collection.id)}
-                  isDragOver={dragOverTarget === collection.id}
-                  expandedFolders={expandedFolders}
-                  draggedItem={draggedItem}
-                  editingRequestId={editingRequestId}
-                  editingFolderId={editingFolderId}
-                  dragOverTarget={dragOverTarget}
-                  onToggle={toggleCollection}
-                  onSelectRequest={onSelectRequest}
-                  onRunRequest={onRunRequest}
-                  onToggleFolder={toggleFolder}
-                  onDragStartRequest={handleDragStartRequest}
-                  onDragEnd={handleDragEnd}
-                  onDragStartFolder={handleDragStartFolder}
-                  onDropOnCollection={handleDropOnCollection}
-                  onDragOverCollection={handleDragOverCollection}
-                  onDragLeaveCollection={handleDragLeave}
-                  onDropOnFolder={handleDropOnFolder}
-                  onDragOverFolder={handleDragOverFolder}
-                  onDragLeaveFolder={handleDragLeave}
-                  onFinishEditRequest={handleFinishEditRequest}
-                  onCancelEditRequest={() => setEditingRequestId(null)}
-                  onFinishEditFolder={handleFinishEditFolder}
-                  onCancelEditFolder={() => setEditingFolderId(null)}
-                  onRequestContextMenu={handleRequestContextMenu}
-                  onFolderContextMenu={handleFolderContextMenu}
-                  onCollectionContextMenu={(e) => handleCollectionContextMenu(e, collection.id)}
-                />
-              ))}
+                <div className="space-y-1">
+                  {collections.map(collection => (
+                    <CollectionItem
+                      key={collection.id}
+                      collection={collection}
+                      isExpanded={isExpanded(collection.id)}
+                      isDragOver={dragOverTarget === collection.id}
+                      expandedFolders={expandedFolders}
+                      draggedItem={draggedItem}
+                      editingRequestId={editingRequestId}
+                      editingFolderId={editingFolderId}
+                      dragOverTarget={dragOverTarget}
+                      onToggle={toggleCollection}
+                      onSelectRequest={onSelectRequest}
+                      onRunRequest={onRunRequest}
+                      onToggleFolder={toggleFolder}
+                      onDragStartRequest={handleDragStartRequest}
+                      onDragEnd={handleDragEnd}
+                      onDragStartFolder={handleDragStartFolder}
+                      onDropOnCollection={handleDropOnCollection}
+                      onDragOverCollection={handleDragOverCollection}
+                      onDragLeaveCollection={handleDragLeave}
+                      onDropOnFolder={handleDropOnFolder}
+                      onDragOverFolder={handleDragOverFolder}
+                      onDragLeaveFolder={handleDragLeave}
+                      onFinishEditRequest={handleFinishEditRequest}
+                      onCancelEditRequest={() => setEditingRequestId(null)}
+                      onFinishEditFolder={handleFinishEditFolder}
+                      onCancelEditFolder={() => setEditingFolderId(null)}
+                      onRequestContextMenu={handleRequestContextMenu}
+                      onFolderContextMenu={handleFolderContextMenu}
+                      onCollectionContextMenu={(e) => handleCollectionContextMenu(e, collection.id)}
+                    />
+                  ))}
 
-              {collections.length === 0 && (
-                <div className="text-center py-8 text-xs text-gray-500">
-                  <Folder size={32} className="mx-auto mb-2 opacity-30" />
-                  <p>Нет коллекций</p>
+                  {collections.length === 0 && (
+                    <div className="text-center py-8 text-xs text-gray-500">
+                      <Folder size={32} className="mx-auto mb-2 opacity-30" />
+                      <p>Нет коллекций</p>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </>
+            )}
           </div>
         )}
 

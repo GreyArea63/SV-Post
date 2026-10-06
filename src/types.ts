@@ -94,6 +94,8 @@ export interface Collection {
   folders: CollectionFolder[];
   /** Корневые запросы коллекции (не в папках) */
   requests: HttpRequest[];
+  /** Переменные уровня коллекции (зарезервировано для будущего) */
+  variables?: KeyValuePair[];
 }
 
 export interface Environment {
@@ -148,6 +150,13 @@ export interface ScriptExecutionResult {
   error?: string;
   skipped?: boolean;
   retry?: boolean;
+  /**
+   * Управление потоком в Collection Runner (pm.execution.setNextRequest):
+   * - undefined — не задано, идти по порядку
+   * - null — остановить выполнение
+   * - string — имя запроса, к которому перейти
+   */
+  nextRequest?: string | null;
 }
 
 export interface ScriptContext {
