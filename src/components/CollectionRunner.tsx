@@ -121,7 +121,6 @@ const mergeChanges = (vars: RunnerVars, result: ScriptExecutionResult | null): R
 
 const MAX_RESULTS = 1000;
 const MAX_SCRIPT_RETRIES = 2;
-/** ✅ Лимит переходов по setNextRequest на одну итерацию — защита от зацикливания */
 const MAX_FLOW_JUMPS = 100;
 
 const HTTP_ERROR_DESCRIPTIONS: Record<number, { title: string; description: string; solution: string }> = {
@@ -162,6 +161,12 @@ const getErrorDetails = (error: string, status: number | string) => {
   };
 };
 
+const maskSecret = (value: string | undefined, head = 12, tail = 6): string => {
+  if (!value) return '(пусто)';
+  if (value.length <= head + tail) return value;
+  return `${value.slice(0, head)}…${value.slice(-tail)} (len=${value.length})`;
+};
+
 export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
   requests,
   collectionName,
@@ -185,6 +190,24 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
   const isCancelledRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const onErrorRef = useRef(onError);
+
+  // ✅ Читаем АКТУАЛЬНЫЕ данные из props через ref на случай, если
+  // модалка держит устаревший снимок (например, env обновили после открытия)
+  const environmentsRef = useRef(environments);
+  const globalVariablesRef = useRef(globalVariables);
+  const activeEnvIdRef = useRef(activeEnvId);
+
+  useEffect(() => {
+    environmentsRef.current = environments;
+  }, [environments]);
+
+  useEffect(() => {
+    globalVariablesRef.current = globalVariables;
+  }, [globalVariables]);
+
+  useEffect(() => {
+    activeEnvIdRef.current = activeEnvId;
+  }, [activeEnvId]);
 
   useEffect(() => {
     onErrorRef.current = onError;
@@ -250,8 +273,11 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     iterationCount: number
   ): Promise<ScriptExecutionResult | null> => {
     let finalScript = script || '';
-    if (scriptType === 'test' && activeEnvId) {
-      const env = environments.find(e => e.id === activeEnvId);
+    if (scriptType === 'test') {
+      // ✅ Берём актуальный env
+      const envsNow = environmentsRef.current;
+      const envIdNow = activeEnvIdRef.current;
+      const env = envsNow.find(e => e.id === envIdNow);
       const globalScript = env?.globalTestScript || '';
       if (globalScript.trim()) {
         finalScript = globalScript + '\n\n' + finalScript;
@@ -288,7 +314,7 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     const processedScript = replaceVariablesInScript(finalScript, allVars);
 
     return await runner.runScript(processedScript, response || undefined);
-  }, [activeEnvId, environments]);
+  }, []);
 
   const startRun = useCallback(async () => {
     isCancelledRef.current = false;
@@ -297,12 +323,29 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     setCurrentIteration(0);
     abortControllerRef.current = new AbortController();
 
-    const activeEnv = environments.find(e => e.id === activeEnvId);
+    // ✅ Читаем актуальные данные из ref — на случай, если props устарели
+    const envsNow = environmentsRef.current;
+    const globalsNow = globalVariablesRef.current;
+    const envIdNow = activeEnvIdRef.current;
+
+    const activeEnv = envsNow.find(e => e.id === envIdNow);
     const baseEnvVars = activeEnv?.variables.filter(v => v.enabled) || [];
-    const baseGlobals = globalVariables.filter(v => v.enabled);
+    const baseGlobals = globalsNow.filter(v => v.enabled);
     const dataRows = parsedData.length > 0 ? parsedData.slice(0, iterations) : Array(iterations).fill({});
     const totalRequests = requests.length;
     const effectiveIterations = dataRows.length;
+
+    // ✅ Диагностика — что видит Runner на старте
+    const tokenVar = baseEnvVars.find(v => v.key === 'token');
+    console.log('[Runner] START', {
+      envsCount: envsNow.length,
+      activeEnvId: envIdNow,
+      activeEnvName: activeEnv?.name || '(не найдено)',
+      baseEnvVarsCount: baseEnvVars.length,
+      baseGlobalsCount: baseGlobals.length,
+      tokenPresent: !!tokenVar,
+      tokenPreview: maskSecret(tokenVar?.value),
+    });
 
     let runnerVars = emptyVars();
 
@@ -469,6 +512,30 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                 headers['Authorization'] = `${processedReq.auth.tokenType || 'Bearer'} ${processedReq.auth.accessToken}`;
               }
             }
+
+            // ✅ FALLBACK: если Authorization остался с неразрешёнными {{...}} — добиваем
+            const authKey = Object.keys(headers).find(k => k.toLowerCase() === 'authorization');
+            if (authKey && typeof headers[authKey] === 'string' && headers[authKey].includes('{{')) {
+              const before = headers[authKey];
+              headers[authKey] = replaceVariables(headers[authKey], liveVars);
+              accumulatedLogs.push(`[DEBUG] Fallback resolve Authorization: "${before}" → "${maskSecret(headers[authKey])}"`);
+            }
+
+            // ✅ ДИАГНОСТИКА: фактический Authorization + token из env
+            const finalAuthHeader = headers['Authorization'] || headers['authorization'];
+            const envToken = liveVars.find(v => v.key === 'token')?.value;
+            if (finalAuthHeader) {
+              accumulatedLogs.push(`[DEBUG] Authorization header: ${maskSecret(String(finalAuthHeader))}`);
+            } else {
+              accumulatedLogs.push(`[DEBUG] ❌ Authorization header MISSING`);
+              accumulatedLogs.push(`[DEBUG] req.auth = ${JSON.stringify({
+                type: processedReq.auth?.type,
+                hasToken: !!processedReq.auth?.token,
+                tokenPreview: maskSecret(processedReq.auth?.token),
+              })}`);
+            }
+            accumulatedLogs.push(`[DEBUG] token from env: ${maskSecret(envToken)}`);
+            accumulatedLogs.push(`[DEBUG] URL: ${url}`);
 
             const config: any = {
               method: processedReq.method.toLowerCase(),
@@ -640,6 +707,12 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                 errorUrl += (errorUrl.includes('?') ? '&' : '?') + new URLSearchParams(errorQP).toString();
               }
 
+              // ✅ Также логируем фактические headers при ошибке
+              const actualAuth = (err.config?.headers?.Authorization || err.config?.headers?.authorization) as string | undefined;
+              if (actualAuth) {
+                accumulatedLogs.push(`[DEBUG] Sent Authorization (from axios config): ${maskSecret(String(actualAuth))}`);
+              }
+
               const newResult: RunResult = {
                 iteration: i + 1,
                 requestIndex: j,
@@ -705,9 +778,8 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
 
         if (skipThisRequest && isCancelledRef.current) break;
 
-        // ============ ✅ ОБРАБОТКА setNextRequest ============
+        // ============ ОБРАБОТКА setNextRequest ============
         if (nextRequestDirective === null) {
-          // null → остановить всю цепочку (все итерации)
           accumulatedLogs.push('[pm.execution.setNextRequest] Остановка цепочки');
           break iterationLoop;
         } else if (typeof nextRequestDirective === 'string') {
@@ -716,7 +788,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
             accumulatedLogs.push(`[pm.execution.setNextRequest] Переход к "${nextRequestDirective}" (индекс ${nextIdx})`);
             j = nextIdx;
             flowJumps++;
-            // Задержка + не continue через обычный инкремент
             if (delay > 0 && !isCancelledRef.current) {
               await new Promise(r => setTimeout(r, delay));
             } else if (!isCancelledRef.current) {
@@ -741,7 +812,7 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
 
     isCancelledRef.current = false;
     setIsRunning(false);
-  }, [environments, activeEnvId, globalVariables, parsedData, iterations, requests, delay, runScript]);
+  }, [parsedData, iterations, requests, delay, runScript]);
 
   const stopRun = useCallback(() => {
     isCancelledRef.current = true;
@@ -1211,7 +1282,10 @@ const ErrorDetailModal: React.FC<ErrorDetailModalProps> = ({ result, onClose, co
                   <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Console Logs</div>
                   <div className="space-y-1">
                     {result.scriptLogs.map((log, i) => (
-                      <div key={i} className="text-[11px] text-gray-300 font-mono bg-[#252525] px-2 py-1 rounded break-all">
+                      <div key={i} className={`text-[11px] font-mono px-2 py-1 rounded break-all ${log.startsWith('[DEBUG]')
+                          ? 'text-amber-300 bg-amber-500/5 border border-amber-500/20'
+                          : 'text-gray-300 bg-[#252525]'
+                        }`}>
                         <span className="text-gray-600 mr-1">[{i + 1}]</span>
                         {log}
                       </div>
