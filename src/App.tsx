@@ -31,7 +31,7 @@ import {
   createScriptContext,
   replaceVariablesInScript
 } from './utils/scriptRunner';
-import { X, CheckCircle, AlertCircle, Info, Save, Database } from 'lucide-react';
+import { X, CheckCircle, AlertCircle, Info, Save, Database, Send } from 'lucide-react';
 
 // ============================================================
 // ТИПЫ
@@ -422,6 +422,28 @@ const DatabaseErrorModal = memo(({
 ));
 DatabaseErrorModal.displayName = 'DatabaseErrorModal';
 
+// ✅ Минималистичная заглушка при отсутствии открытых вкладок
+const EmptyState = memo(({ onNewTab }: { onNewTab: () => void }) => (
+  <div className="flex-1 flex items-center justify-center bg-[#1e1e1e]">
+    <div className="text-center max-w-sm px-6">
+      <div className="w-16 h-16 rounded-2xl bg-[#2d2d2d] flex items-center justify-center mx-auto mb-4">
+        <Send size={28} className="text-gray-500" />
+      </div>
+      <div className="text-gray-400 text-sm font-medium mb-5">
+        Нет открытых вкладок
+      </div>
+      <button
+        onClick={onNewTab}
+        className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-b from-blue-500 to-blue-700 hover:from-blue-400 hover:to-blue-600 rounded-lg text-sm transition-all text-white font-medium shadow-lg shadow-blue-500/30 border border-blue-400/30 active:translate-y-0.5"
+      >
+        <Send size={14} />
+        Создать запрос
+      </button>
+    </div>
+  </div>
+));
+EmptyState.displayName = 'EmptyState';
+
 const HeaderBar = memo(({
   activeEnvId,
   environments,
@@ -496,17 +518,9 @@ HeaderBar.displayName = 'HeaderBar';
 // ГЛАВНЫЙ КОМПОНЕНТ
 // ============================================================
 function App() {
-  const [tabs, setTabs] = useState<Tab[]>([
-    {
-      id: generateId(),
-      request: createDefaultRequest(),
-      response: null,
-      loading: false,
-      error: null,
-      savedSnapshot: createSnapshot(createDefaultRequest()),
-    }
-  ]);
-  const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
+  // ✅ ПУСТОЙ СТАРТ — никаких автовкладок
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string>('');
   const [collections, setCollections] = useState<Collection[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
@@ -535,7 +549,6 @@ function App() {
 
   const activeTab = useMemo(() => tabs.find(tab => tab.id === activeTabId), [tabs, activeTabId]);
 
-  /** ✅ Множество вкладок с несохранёнными изменениями — для индикатора на вкладке */
   const unsavedTabIds = useMemo(() => {
     const set = new Set<string>();
     tabs.forEach(tab => {
@@ -652,7 +665,7 @@ function App() {
   }, [environments, activeEnvId]);
 
   // ============================================================
-  // processRequest с поддержкой override от скриптов
+  // processRequest
   // ============================================================
   const processRequest = useCallback((
     request: HttpRequest,
@@ -870,7 +883,6 @@ function App() {
     ));
 
     let attempt = 0;
-    let lastTestResult: ScriptExecutionResult | null = null;
 
     while (attempt <= MAX_REQUEST_RETRIES) {
       let preRequestResult: ScriptExecutionResult | null = null;
@@ -1059,7 +1071,6 @@ function App() {
         if (activeTab.request.scripts?.test || getActiveEnvironment()?.globalTestScript?.trim()) {
           testResult = await executeScript('test', activeTab.request.scripts?.test || '', activeTab.request, httpResponse);
           if (testResult) {
-            lastTestResult = testResult;
             accumulatedLogs = [...accumulatedLogs, ...(testResult.logs || [])];
             overrides = mergeScriptChanges(overrides, testResult);
           }
@@ -1135,7 +1146,6 @@ function App() {
           if (activeTab.request.scripts?.test || getActiveEnvironment()?.globalTestScript?.trim()) {
             testResult = await executeScript('test', activeTab.request.scripts?.test || '', activeTab.request, httpResponse);
             if (testResult) {
-              lastTestResult = testResult;
               accumulatedLogs = [...accumulatedLogs, ...(testResult.logs || [])];
               overrides = mergeScriptChanges(overrides, testResult);
             }
@@ -1183,35 +1193,22 @@ function App() {
     }
   }, [activeTab, activeTabId, processRequest, history, showToast, executeScript, applyScriptChanges, getActiveEnvironment]);
 
-  // ============================================================
-  // ✅ Переключение вкладки — БЕЗ запроса сохранения
-  // ============================================================
   const handleTabClick = useCallback((tabId: string) => {
+    if (!tabId) return;
     setActiveTabId(tabId);
   }, []);
 
+  // ✅ Не создаёт вкладку при закрытии последней — оставляет пустой экран
   const performTabClose = useCallback((tabId: string, currentTabs: Tab[]) => {
     const newTabs = currentTabs.filter(tab => tab.id !== tabId);
     if (newTabs.length === 0) {
-      const defaultRequest = createDefaultRequest();
-      const defaultTab: Tab = {
-        id: generateId(),
-        request: defaultRequest,
-        response: null,
-        loading: false,
-        error: null,
-        savedSnapshot: createSnapshot(defaultRequest),
-      };
-      setActiveTabId(defaultTab.id);
-      return [defaultTab];
+      setActiveTabId('');
+      return [];
     }
     if (tabId === activeTabId) setActiveTabId(newTabs[0].id);
     return newTabs;
   }, [activeTabId]);
 
-  // ============================================================
-  // ✅ Закрытие вкладки — С запросом сохранения (как Postman)
-  // ============================================================
   const handleTabClose = useCallback((tabId: string) => {
     const tabToClose = tabs.find(t => t.id === tabId);
     if (tabToClose && hasUnsavedChanges(tabToClose)) {
@@ -1240,7 +1237,26 @@ function App() {
   }, [tabs.length, showToast]);
 
   const handleMethodChange = useCallback((newMethod: string) => {
-    if (!activeTab) return;
+    // ✅ Если нет активной вкладки — создаём новую с этим методом
+    if (!activeTab) {
+      if (tabs.length >= MAX_TABS) {
+        showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
+        return;
+      }
+      const newRequest = createDefaultRequest(newMethod);
+      const newTab: Tab = {
+        id: generateId(),
+        request: newRequest,
+        response: null,
+        loading: false,
+        error: null,
+        savedSnapshot: createSnapshot(newRequest),
+      };
+      setTabs(prevTabs => [...prevTabs, newTab]);
+      setActiveTabId(newTab.id);
+      return;
+    }
+
     if (isTabEmpty(activeTab)) {
       const updatedRequest = {
         ...activeTab.request,
@@ -1394,6 +1410,7 @@ function App() {
     showToast('success', `Коллекция переименована в "${newName}"`);
   }, [collections, showToast]);
 
+  // ✅ Не создаёт вкладку при удалении коллекции
   const handleDeleteCollection = useCallback(async (collectionId: string) => {
     const updatedCollections = collections.filter(c => c.id !== collectionId);
     setCollections(updatedCollections);
@@ -1401,17 +1418,8 @@ function App() {
     setTabs(prevTabs => {
       const filtered = prevTabs.filter(tab => tab.collectionId !== collectionId);
       if (filtered.length === 0) {
-        const defaultRequest = createDefaultRequest();
-        const newTab: Tab = {
-          id: generateId(),
-          request: defaultRequest,
-          response: null,
-          loading: false,
-          error: null,
-          savedSnapshot: createSnapshot(defaultRequest),
-        };
-        setActiveTabId(newTab.id);
-        return [newTab];
+        setActiveTabId('');
+        return [];
       }
       if (!filtered.find(t => t.id === activeTabId)) {
         setActiveTabId(filtered[0].id);
@@ -1609,6 +1617,7 @@ function App() {
     showToast('success', `Запрос переименован в "${newName}"`);
   }, [collections, showToast]);
 
+  // ✅ Не создаёт вкладку при удалении запроса
   const handleDeleteRequest = useCallback(async (
     collectionId: string,
     requestId: string,
@@ -1633,15 +1642,8 @@ function App() {
     setTabs(prevTabs => {
       const filtered = prevTabs.filter(tab => tab.request.id !== requestId);
       if (filtered.length === 0) {
-        const defaultRequest = createDefaultRequest();
-        const newTab: Tab = {
-          id: generateId(),
-          request: defaultRequest,
-          response: null, loading: false, error: null,
-          savedSnapshot: createSnapshot(defaultRequest),
-        };
-        setActiveTabId(newTab.id);
-        return [newTab];
+        setActiveTabId('');
+        return [];
       }
       if (!filtered.find(t => t.id === activeTabId)) {
         setActiveTabId(filtered[0].id);
@@ -1713,6 +1715,7 @@ function App() {
     showToast('success', 'Коллекции экспортированы');
   }, [collections, showToast]);
 
+  // ✅ Корректно создаёт вкладку при выборе запроса из коллекции
   const handleSelectRequest = useCallback((
     collectionId: string,
     requestId: string,
@@ -1731,6 +1734,8 @@ function App() {
       showToast('error', 'Запрос не найден в коллекции');
       return;
     }
+
+    // Если есть активная пустая вкладка — используем её
     if (activeTab && isTabEmpty(activeTab)) {
       setTabs(prevTabs => prevTabs.map(tab =>
         tab.id === activeTabId
@@ -1747,6 +1752,8 @@ function App() {
       showToast('info', `Загружен запрос: ${request.name}`);
       return;
     }
+
+    // Иначе — создаём новую вкладку
     if (tabs.length >= MAX_TABS) {
       showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
       return;
@@ -2064,7 +2071,7 @@ function App() {
   }, [activeTab, activeTabId, tabs.length, showToast]);
 
   // ============================================================
-  // ✅ ГЛОБАЛЬНЫЕ ГОРЯЧИЕ КЛАВИШИ (capture — работает везде, включая Monaco)
+  // ГОРЯЧИЕ КЛАВИШИ
   // ============================================================
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -2091,18 +2098,19 @@ function App() {
       }
       if (e.ctrlKey && e.key === 'Tab' && !e.shiftKey) {
         e.preventDefault();
+        if (tabs.length === 0) return;
         const currentIndex = tabs.findIndex(t => t.id === activeTabId);
         const nextIndex = (currentIndex + 1) % tabs.length;
         setActiveTabId(tabs[nextIndex].id);
       }
       if (e.ctrlKey && e.shiftKey && e.key === 'Tab') {
         e.preventDefault();
+        if (tabs.length === 0) return;
         const currentIndex = tabs.findIndex(t => t.id === activeTabId);
         const prevIndex = currentIndex === 0 ? tabs.length - 1 : currentIndex - 1;
         setActiveTabId(tabs[prevIndex].id);
       }
     };
-    // capture: true — перехватываем раньше Monaco/textarea
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [activeTab, activeTabId, tabs, handleSend, handleNewTab, handleTabClose, handleSaveCurrentTab]);
@@ -2164,9 +2172,9 @@ function App() {
             onTabsReorder={setTabs}
             unsavedTabIds={unsavedTabIds}
           />
-          <div className="flex-1 flex flex-col overflow-hidden" ref={containerRef}>
-            <div className="flex flex-col min-h-0" style={{ height: `${requestHeight}%` }}>
-              {activeTab && (
+          {activeTab ? (
+            <div className="flex-1 flex flex-col overflow-hidden" ref={containerRef}>
+              <div className="flex flex-col min-h-0" style={{ height: `${requestHeight}%` }}>
                 <RequestBuilder
                   request={activeTab.request}
                   onChange={handleRequestChange}
@@ -2184,17 +2192,15 @@ function App() {
                   onRunTest={handleRunTest}
                   lastScriptResult={lastScriptResult}
                 />
-              )}
-            </div>
-            <div
-              className={`h-1 bg-[rgba(255,255,255,0.05)] resize-handle shrink-0 ${isResizing ? 'active' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setIsResizing(true);
-              }}
-            />
-            <div className="flex flex-col min-h-0" style={{ height: `${100 - requestHeight}%` }}>
-              {activeTab && (
+              </div>
+              <div
+                className={`h-1 bg-[rgba(255,255,255,0.05)] resize-handle shrink-0 ${isResizing ? 'active' : ''}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setIsResizing(true);
+                }}
+              />
+              <div className="flex flex-col min-h-0" style={{ height: `${100 - requestHeight}%` }}>
                 <ResponseViewer
                   response={activeTab.response}
                   loading={activeTab.loading}
@@ -2202,9 +2208,12 @@ function App() {
                   testResults={activeTab.testResults}
                   scriptLogs={activeTab.scriptLogs}
                 />
-              )}
+              </div>
             </div>
-          </div>
+          ) : (
+            // ✅ Заглушка при отсутствии открытых вкладок
+            <EmptyState onNewTab={handleNewTab} />
+          )}
         </div>
       </div>
 
