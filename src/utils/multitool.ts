@@ -1,6 +1,5 @@
 // ============================================================
-// Multitool — утилиты для преобразования строк
-// Порт логики Python-скрипта mlt.py (Multitool v1.4.0)
+// Multitool — комбинируемые операции над строками
 // ============================================================
 
 /**
@@ -15,50 +14,146 @@ export function parseLines(text: string): string[] {
 }
 
 /**
- * Функция 1: Обернуть каждую строку в одинарные кавычки.
- * Опционально — добавить запятую в конец каждой строки.
+ * Опции обработки (чекбоксы в UI).
  */
-export function toSingleQuotes(text: string, withComma: boolean = false): string {
-  const lines = parseLines(text);
-  return lines.map(line => withComma ? `'${line}',` : `'${line}'`).join('\n');
+export interface MultitoolOptions {
+  /** Удалить дубликаты (с сохранением порядка) */
+  removeDuplicates: boolean;
+  /** Экранирование одинарных кавычек: ' → '' */
+  escapeSingle: boolean;
+  /** Экранирование двойных кавычек: " → \" */
+  escapeDouble: boolean;
+  /** Оборачивание в кавычки */
+  wrapQuotes: 'none' | 'single' | 'double';
+  /** Проставить запятые в конце строк */
+  addCommas: boolean;
+  /** Режим Workflow Query (блокирует остальные опции) */
+  workflowQuery: boolean;
+  /** Базовое имя для Workflow Query */
+  workflowBase: string;
+}
+
+export const DEFAULT_OPTIONS: MultitoolOptions = {
+  removeDuplicates: false,
+  escapeSingle: false,
+  escapeDouble: false,
+  wrapQuotes: 'none',
+  addCommas: false,
+  workflowQuery: false,
+  workflowBase: '',
+};
+
+/**
+ * Статистика по удалённым дубликатам.
+ */
+export interface DuplicatesInfo {
+  total: number;
+  unique: number;
+  removed: number;
+  duplicates: Array<{ value: string; count: number }>;
 }
 
 /**
- * Функция 2: Обернуть каждую строку в двойные кавычки.
- * Опционально — добавить запятую в конец каждой строки.
+ * Результат обработки.
  */
-export function toDoubleQuotes(text: string, withComma: boolean = false): string {
-  const lines = parseLines(text);
-  return lines.map(line => withComma ? `"${line}",` : `"${line}"`).join('\n');
+export interface MultitoolResult {
+  output: string;
+  /** Статистика (если включено удаление дубликатов) */
+  duplicates?: DuplicatesInfo;
+  /** Сообщение об ошибке */
+  error?: string;
 }
 
 /**
- * Функция 3: Добавить запятую в конец каждой строки.
+ * Применяет выбранные операции к списку строк в фиксированном порядке:
+ *  1. Удалить дубликаты
+ *  2. Экранирование '
+ *  3. Экранирование "
+ *  4. Обернуть в кавычки (single / double / none)
+ *  5. Проставить запятые
  */
-export function addCommas(text: string): string {
-  const lines = parseLines(text);
-  return lines.map(line => `${line},`).join('\n');
+export function processLines(lines: string[], options: MultitoolOptions): MultitoolResult {
+  let workingLines = [...lines];
+  let duplicatesInfo: DuplicatesInfo | undefined;
+
+  // 1. Удалить дубликаты
+  if (options.removeDuplicates) {
+    const total = workingLines.length;
+    const seen = new Map<string, number>();
+    const unique: string[] = [];
+
+    for (const line of workingLines) {
+      if (seen.has(line)) {
+        seen.set(line, seen.get(line)! + 1);
+      } else {
+        seen.set(line, 1);
+        unique.push(line);
+      }
+    }
+
+    const duplicates: Array<{ value: string; count: number }> = [];
+    seen.forEach((count, value) => {
+      if (count > 1) duplicates.push({ value, count });
+    });
+
+    duplicatesInfo = {
+      total,
+      unique: unique.length,
+      removed: total - unique.length,
+      duplicates,
+    };
+
+    workingLines = unique;
+  }
+
+  // 2. Экранирование одинарных кавычек: ' → ''
+  if (options.escapeSingle) {
+    workingLines = workingLines.map(line => line.replace(/'/g, "''"));
+  }
+
+  // 3. Экранирование двойных кавычек: " → \"
+  if (options.escapeDouble) {
+    workingLines = workingLines.map(line => line.replace(/"/g, '\\"'));
+  }
+
+  // 4. Обернуть в кавычки
+  if (options.wrapQuotes === 'single') {
+    workingLines = workingLines.map(line => `'${line}'`);
+  } else if (options.wrapQuotes === 'double') {
+    workingLines = workingLines.map(line => `"${line}"`);
+  }
+
+  // 5. Проставить запятые
+  if (options.addCommas) {
+    workingLines = workingLines.map(line => `${line},`);
+  }
+
+  return {
+    output: workingLines.join('\n'),
+    duplicates: duplicatesInfo,
+  };
 }
 
 /**
- * Функция 4: Экранирование двойных кавычек.
+ * Генерирует URL query для фильтрации workflow.
+ * Формат: {base}?query=WorkflowId IN ("id1", "id2", ...)
+ * Результат URL-кодируется (сохраняя ? = &).
  */
-export function escapeDoubleQuotes(text: string): string {
-  const lines = parseLines(text);
-  return lines.map(line => line.replace(/"/g, '\\"')).join('\n');
-}
-
-/**
- * Функция 5: Workflow Query.
- */
-export function buildWorkflowQuery(base: string, idsText: string): string {
+export function buildWorkflowQuery(base: string, idsText: string): MultitoolResult {
   const baseTrimmed = (base || '').trim();
+  if (!baseTrimmed) {
+    return { output: '', error: 'Укажите базовое имя' };
+  }
+
   const ids = parseLines(idsText);
-  if (!baseTrimmed || ids.length === 0) return '';
+  if (ids.length === 0) {
+    return { output: '', error: 'Введите хотя бы один ID' };
+  }
 
   const idsStr = ids.map(id => `"${id}"`).join(', ');
   const query = `${baseTrimmed}?query=WorkflowId IN (${idsStr})`;
 
+  // URL-кодирование с сохранением ? = &
   const encoded = query
     .split('')
     .map(ch => {
@@ -67,152 +162,35 @@ export function buildWorkflowQuery(base: string, idsText: string): string {
     })
     .join('');
 
-  return encoded;
+  return { output: encoded };
 }
 
 /**
- * Функция 6: Экранирование + обернуть в одинарные кавычки.
+ * Есть ли хотя бы одна активная операция (для валидации кнопки).
  */
-export function escapeAndWrapSingle(text: string): string {
-  const lines = parseLines(text);
-  return lines.map(line => `'${line.replace(/'/g, "''")}'`).join('\n');
+export function hasAnyOperation(options: MultitoolOptions): boolean {
+  if (options.workflowQuery) return true;
+  return (
+    options.removeDuplicates ||
+    options.escapeSingle ||
+    options.escapeDouble ||
+    options.wrapQuotes !== 'none' ||
+    options.addCommas
+  );
 }
 
 /**
- * Функция 7: Удалить дубликаты (с сохранением порядка первого появления).
+ * Главная функция — обрабатывает ввод в соответствии с опциями.
  */
-export interface DuplicatesResult {
-  unique: string[];
-  total: number;
-  removed: number;
-  duplicates: Array<{ value: string; count: number }>;
-}
-
-export function removeDuplicates(text: string): DuplicatesResult {
-  const lines = parseLines(text);
-  const total = lines.length;
-
-  const seen = new Map<string, number>();
-  const unique: string[] = [];
-
-  for (const line of lines) {
-    if (seen.has(line)) {
-      seen.set(line, seen.get(line)! + 1);
-    } else {
-      seen.set(line, 1);
-      unique.push(line);
-    }
+export function processInput(input: string, options: MultitoolOptions): MultitoolResult {
+  if (options.workflowQuery) {
+    return buildWorkflowQuery(options.workflowBase, input);
   }
 
-  const duplicates: Array<{ value: string; count: number }> = [];
-  seen.forEach((count, value) => {
-    if (count > 1) duplicates.push({ value, count });
-  });
+  const lines = parseLines(input);
+  if (lines.length === 0) {
+    return { output: '' };
+  }
 
-  const removed = total - unique.length;
-
-  return { unique, total, removed, duplicates };
+  return processLines(lines, options);
 }
-
-export function formatDuplicatesResult(result: DuplicatesResult): string {
-  return result.unique.join('\n');
-}
-
-// ============================================================
-// Описания функций для UI
-// ============================================================
-export interface MultitoolFunction {
-  id: string;
-  title: string;
-  description: string;
-  /** ✅ Есть ли опция «Проставить запятые» */
-  hasCommaOption?: boolean;
-  /** Нужен ли дополнительный ввод (например, base для workflow query) */
-  extraInput?: {
-    label: string;
-    placeholder: string;
-  };
-  inputPlaceholder: string;
-  outputPlaceholder: string;
-  /** Функция-обработчик. Второй параметр — доп. опции (comma для 1-2, extra для 5) */
-  process: (input: string, opts?: { withComma?: boolean; extra?: string }) => string;
-  postProcess?: (input: string, opts?: { withComma?: boolean; extra?: string }) => {
-    info?: string;
-    highlights?: Array<{ value: string; count: number }>;
-    output: string;
-  };
-}
-
-export const MULTITOOL_FUNCTIONS: MultitoolFunction[] = [
-  {
-    id: 'single-quotes',
-    title: 'Одинарные кавычки',
-    description: 'Оборачивает каждую строку в одинарные кавычки',
-    hasCommaOption: true,
-    inputPlaceholder: 'Вставьте строки (по одной на строку)...',
-    outputPlaceholder: 'Результат',
-    process: (input, opts) => toSingleQuotes(input, opts?.withComma || false),
-  },
-  {
-    id: 'double-quotes',
-    title: 'Двойные кавычки',
-    description: 'Оборачивает каждую строку в двойные кавычки',
-    hasCommaOption: true,
-    inputPlaceholder: 'Вставьте строки (по одной на строку)...',
-    outputPlaceholder: 'Результат',
-    process: (input, opts) => toDoubleQuotes(input, opts?.withComma || false),
-  },
-  {
-    id: 'commas',
-    title: 'Проставить запятые',
-    description: 'Добавляет запятую в конец каждой строки',
-    inputPlaceholder: 'Вставьте строки (по одной на строку)...',
-    outputPlaceholder: 'Результат',
-    process: (input) => addCommas(input),
-  },
-  {
-    id: 'escape-quotes',
-    title: 'Экранирование кавычек',
-    description: 'Заменяет " на \\"',
-    inputPlaceholder: 'Вставьте строки (по одной на строку)...',
-    outputPlaceholder: 'Результат',
-    process: (input) => escapeDoubleQuotes(input),
-  },
-  {
-    id: 'workflow-query',
-    title: 'Workflow Query',
-    description: 'Генерирует URL query для фильтрации workflow',
-    inputPlaceholder: 'Вставьте ID (по одному на строку)...',
-    outputPlaceholder: 'URL query',
-    extraInput: {
-      label: 'Базовое имя',
-      placeholder: 'например, workflows',
-    },
-    process: (input, opts) => buildWorkflowQuery(opts?.extra || '', input),
-  },
-  {
-    id: 'escape-wrap-single',
-    title: 'Экранирование + обернуть',
-    description: "Заменяет ' на '' и оборачивает в одинарные кавычки",
-    inputPlaceholder: 'Вставьте строки (по одной на строку)...',
-    outputPlaceholder: 'Результат',
-    process: (input) => escapeAndWrapSingle(input),
-  },
-  {
-    id: 'remove-duplicates',
-    title: 'Удалить дубликаты',
-    description: 'Убирает повторяющиеся строки, показывает статистику',
-    inputPlaceholder: 'Вставьте строки (по одной на строку)...',
-    outputPlaceholder: 'Уникальные строки',
-    process: (input) => formatDuplicatesResult(removeDuplicates(input)),
-    postProcess: (input) => {
-      const result = removeDuplicates(input);
-      const info = `Всего строк: ${result.total} · Уникальных: ${result.unique.length} · Удалено: ${result.removed}`;
-      return {
-        output: formatDuplicatesResult(result),
-        info,
-        highlights: result.duplicates,
-      };
-    },
-  },
-];
