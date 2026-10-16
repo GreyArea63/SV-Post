@@ -15,32 +15,25 @@ export function parseLines(text: string): string[] {
 }
 
 /**
- * Функция 1: Обернуть каждую строку в одинарные кавычки (построчно).
- * Пример:
- *   abc → 'abc'
- *   def → 'def'
+ * Функция 1: Обернуть каждую строку в одинарные кавычки.
+ * Опционально — добавить запятую в конец каждой строки.
  */
-export function toSingleQuotes(text: string): string {
+export function toSingleQuotes(text: string, withComma: boolean = false): string {
   const lines = parseLines(text);
-  return lines.map(line => `'${line}'`).join('\n');
+  return lines.map(line => withComma ? `'${line}',` : `'${line}'`).join('\n');
 }
 
 /**
- * Функция 2: Обернуть каждую строку в двойные кавычки (построчно).
- * Пример:
- *   abc → "abc"
- *   def → "def"
+ * Функция 2: Обернуть каждую строку в двойные кавычки.
+ * Опционально — добавить запятую в конец каждой строки.
  */
-export function toDoubleQuotes(text: string): string {
+export function toDoubleQuotes(text: string, withComma: boolean = false): string {
   const lines = parseLines(text);
-  return lines.map(line => `"${line}"`).join('\n');
+  return lines.map(line => withComma ? `"${line}",` : `"${line}"`).join('\n');
 }
 
 /**
  * Функция 3: Добавить запятую в конец каждой строки.
- * Пример:
- *   abc → abc,
- *   def → def,
  */
 export function addCommas(text: string): string {
   const lines = parseLines(text);
@@ -49,9 +42,6 @@ export function addCommas(text: string): string {
 
 /**
  * Функция 4: Экранирование двойных кавычек.
- * Замена " → \"
- * Пример:
- *   a"b → a\"b
  */
 export function escapeDoubleQuotes(text: string): string {
   const lines = parseLines(text);
@@ -60,12 +50,6 @@ export function escapeDoubleQuotes(text: string): string {
 
 /**
  * Функция 5: Workflow Query.
- * Формат: {base}?query=WorkflowId IN ("id1", "id2", ...)
- * Результат URL-кодируется.
- * Пример:
- *   base = workflows
- *   ids = [aaa, bbb]
- *   → workflows?query=WorkflowId%20IN%20%28%22aaa%22%2C%20%22bbb%22%29
  */
 export function buildWorkflowQuery(base: string, idsText: string): string {
   const baseTrimmed = (base || '').trim();
@@ -75,8 +59,6 @@ export function buildWorkflowQuery(base: string, idsText: string): string {
   const idsStr = ids.map(id => `"${id}"`).join(', ');
   const query = `${baseTrimmed}?query=WorkflowId IN (${idsStr})`;
 
-  // URL-кодирование с сохранением ?=&
-  // Вручную через encodeURIComponent, потому что urlencode с safe='?=&' в JS нет из коробки
   const encoded = query
     .split('')
     .map(ch => {
@@ -90,10 +72,6 @@ export function buildWorkflowQuery(base: string, idsText: string): string {
 
 /**
  * Функция 6: Экранирование + обернуть в одинарные кавычки.
- * Внутри строки: ' → ''
- * Снаружи: обернуть в '
- * Пример:
- *   a'b → 'a''b'
  */
 export function escapeAndWrapSingle(text: string): string {
   const lines = parseLines(text);
@@ -102,16 +80,11 @@ export function escapeAndWrapSingle(text: string): string {
 
 /**
  * Функция 7: Удалить дубликаты (с сохранением порядка первого появления).
- * Возвращает уникальные строки + статистику.
  */
 export interface DuplicatesResult {
-  /** Уникальные строки (первое появление) */
   unique: string[];
-  /** Общее количество строк во вводе */
   total: number;
-  /** Сколько дубликатов удалено */
   removed: number;
-  /** Какие строки были дубликатами и сколько раз встречались */
   duplicates: Array<{ value: string; count: number }>;
 }
 
@@ -141,9 +114,6 @@ export function removeDuplicates(text: string): DuplicatesResult {
   return { unique, total, removed, duplicates };
 }
 
-/**
- * Форматирует результат removeDuplicates для отображения в textarea.
- */
 export function formatDuplicatesResult(result: DuplicatesResult): string {
   return result.unique.join('\n');
 }
@@ -155,24 +125,20 @@ export interface MultitoolFunction {
   id: string;
   title: string;
   description: string;
+  /** ✅ Есть ли опция «Проставить запятые» */
+  hasCommaOption?: boolean;
   /** Нужен ли дополнительный ввод (например, base для workflow query) */
   extraInput?: {
     label: string;
     placeholder: string;
   };
-  /** Основной placeholder для textarea ввода */
   inputPlaceholder: string;
-  /** Placeholder для результата */
   outputPlaceholder: string;
-  /** Функция-обработчик */
-  process: (input: string, extra?: string) => string;
-  /** Дополнительная информация после обработки (опционально) */
-  postProcess?: (input: string, extra?: string) => {
-    /** Строка с информацией, если есть */
+  /** Функция-обработчик. Второй параметр — доп. опции (comma для 1-2, extra для 5) */
+  process: (input: string, opts?: { withComma?: boolean; extra?: string }) => string;
+  postProcess?: (input: string, opts?: { withComma?: boolean; extra?: string }) => {
     info?: string;
-    /** Строки для подсветки (удалённые дубликаты) */
     highlights?: Array<{ value: string; count: number }>;
-    /** Уникальные строки (для вставки в output) */
     output: string;
   };
 }
@@ -182,17 +148,19 @@ export const MULTITOOL_FUNCTIONS: MultitoolFunction[] = [
     id: 'single-quotes',
     title: 'Одинарные кавычки',
     description: 'Оборачивает каждую строку в одинарные кавычки',
+    hasCommaOption: true,
     inputPlaceholder: 'Вставьте строки (по одной на строку)...',
     outputPlaceholder: 'Результат',
-    process: (input) => toSingleQuotes(input),
+    process: (input, opts) => toSingleQuotes(input, opts?.withComma || false),
   },
   {
     id: 'double-quotes',
     title: 'Двойные кавычки',
     description: 'Оборачивает каждую строку в двойные кавычки',
+    hasCommaOption: true,
     inputPlaceholder: 'Вставьте строки (по одной на строку)...',
     outputPlaceholder: 'Результат',
-    process: (input) => toDoubleQuotes(input),
+    process: (input, opts) => toDoubleQuotes(input, opts?.withComma || false),
   },
   {
     id: 'commas',
@@ -220,7 +188,7 @@ export const MULTITOOL_FUNCTIONS: MultitoolFunction[] = [
       label: 'Базовое имя',
       placeholder: 'например, workflows',
     },
-    process: (input, extra) => buildWorkflowQuery(extra || '', input),
+    process: (input, opts) => buildWorkflowQuery(opts?.extra || '', input),
   },
   {
     id: 'escape-wrap-single',

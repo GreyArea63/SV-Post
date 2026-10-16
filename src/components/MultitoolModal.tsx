@@ -10,7 +10,6 @@ interface MultitoolModalProps {
   onClose: () => void;
 }
 
-// Иконки для функций (по id)
 const FUNCTION_ICONS: Record<string, React.ReactNode> = {
   'single-quotes': <Quote size={14} />,
   'double-quotes': <Quote size={14} />,
@@ -25,6 +24,7 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
   const [activeId, setActiveId] = useState<string>(MULTITOOL_FUNCTIONS[0]?.id || '');
   const [input, setInput] = useState('');
   const [extraInput, setExtraInput] = useState('');
+  const [withComma, setWithComma] = useState(false);
   const [output, setOutput] = useState('');
   const [info, setInfo] = useState<string | null>(null);
   const [highlights, setHighlights] = useState<Array<{ value: string; count: number }>>([]);
@@ -35,12 +35,13 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
     [activeId]
   );
 
-  // При смене функции — очищаем output, info, highlights, копируем ввод? Нет, оставляем
+  // При смене функции — очищаем output, info, highlights, чекбокс
   useEffect(() => {
     setOutput('');
     setInfo(null);
     setHighlights([]);
     setCopied(false);
+    setWithComma(false);
   }, [activeId]);
 
   // Escape для закрытия
@@ -57,18 +58,20 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
   const handleProcess = useCallback(() => {
     if (!activeFunction) return;
 
+    const opts = { withComma, extra: extraInput };
+
     if (activeFunction.postProcess) {
-      const res = activeFunction.postProcess(input, extraInput);
+      const res = activeFunction.postProcess(input, opts);
       setOutput(res.output);
       setInfo(res.info || null);
       setHighlights(res.highlights || []);
     } else {
-      const res = activeFunction.process(input, extraInput);
+      const res = activeFunction.process(input, opts);
       setOutput(res);
       setInfo(null);
       setHighlights([]);
     }
-  }, [activeFunction, input, extraInput]);
+  }, [activeFunction, input, extraInput, withComma]);
 
   const handleCopy = useCallback(async () => {
     if (!output) return;
@@ -77,7 +80,6 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Fallback
       const ta = document.createElement('textarea');
       ta.value = output;
       document.body.appendChild(ta);
@@ -96,6 +98,7 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
     setInfo(null);
     setHighlights([]);
     setCopied(false);
+    setWithComma(false);
   }, []);
 
   if (!activeFunction) return null;
@@ -131,11 +134,10 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
                 <button
                   key={fn.id}
                   onClick={() => setActiveId(fn.id)}
-                  className={`w-full flex items-start gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
-                    activeId === fn.id
+                  className={`w-full flex items-start gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${activeId === fn.id
                       ? 'bg-indigo-500/15 border border-indigo-500/30 text-gray-100'
                       : 'text-gray-400 hover:bg-white/5 hover:text-gray-200 border border-transparent'
-                  }`}
+                    }`}
                 >
                   <div className={`shrink-0 mt-0.5 ${activeId === fn.id ? 'text-indigo-400' : 'text-gray-500'}`}>
                     {FUNCTION_ICONS[fn.id] || <Sparkles size={14} />}
@@ -196,6 +198,21 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
                 />
               </div>
 
+              {/* ✅ Опция «Проставить запятые» */}
+              {activeFunction.hasCommaOption && (
+                <label className="flex items-center gap-2 px-3 py-2 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg cursor-pointer hover:border-gray-500/50 transition-all select-none">
+                  <input
+                    type="checkbox"
+                    checked={withComma}
+                    onChange={(e) => setWithComma(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-indigo-500 cursor-pointer"
+                  />
+                  <span className="text-xs text-gray-300">
+                    Проставить запятые <span className="text-gray-500">(добавить <code className="text-indigo-400 font-mono">,</code> в конец каждой строки)</span>
+                  </span>
+                </label>
+              )}
+
               {/* Кнопки действий */}
               <div className="flex items-center gap-2">
                 <button
@@ -253,11 +270,10 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
                   {output && (
                     <button
                       onClick={handleCopy}
-                      className={`flex items-center gap-1 px-2 py-1 text-[10px] rounded transition-all ${
-                        copied
+                      className={`flex items-center gap-1 px-2 py-1 text-[10px] rounded transition-all ${copied
                           ? 'text-emerald-400 bg-emerald-500/10'
                           : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
-                      }`}
+                        }`}
                     >
                       {copied ? <Check size={10} /> : <Copy size={10} />}
                       {copied ? 'Скопировано!' : 'Копировать'}
