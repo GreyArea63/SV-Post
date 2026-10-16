@@ -13,6 +13,7 @@ import { NewCollectionModal } from './components/NewCollectionModal';
 import { NewFolderModal } from './components/NewFolderModal';
 import { UpdateNotification } from './components/UpdateNotification';
 import { ImportCurlModal } from './components/ImportCurlModal';
+import { MultitoolModal } from './components/MultitoolModal';
 import {
   HttpRequest,
   HttpResponse,
@@ -456,6 +457,7 @@ const HeaderBar = memo(({
   onClearHistory,
   onClearAll,
   onImportCurl,
+  onOpenMultitool,
 }: {
   activeEnvId: string | null;
   environments: Environment[];
@@ -468,6 +470,7 @@ const HeaderBar = memo(({
   onClearHistory: () => void;
   onClearAll: () => void;
   onImportCurl: () => void;
+  onOpenMultitool: () => void;
 }) => (
   <div className="h-8 bg-[#1e1e1e] border-b border-[rgba(255,255,255,0.08)] flex items-center px-3 gap-2 shrink-0">
     <FunctionMenu
@@ -479,6 +482,7 @@ const HeaderBar = memo(({
       onClearHistory={onClearHistory}
       onClearAll={onClearAll}
       onImportCurl={onImportCurl}
+      onOpenMultitool={onOpenMultitool}
     />
     <div className="h-4 w-px bg-[rgba(255,255,255,0.1)]" />
     <h1 className="text-sm font-bold text-gray-200">SV-Post</h1>
@@ -529,6 +533,7 @@ function App() {
   const [showEnvManager, setShowEnvManager] = useState(false);
   const [showJsonBuilder, setShowJsonBuilder] = useState(false);
   const [showImportCurl, setShowImportCurl] = useState(false);
+  const [showMultitool, setShowMultitool] = useState(false);
   const [runningRequest, setRunningRequest] = useState<{ request: HttpRequest; collectionName: string } | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showSaveConfirm, setShowSaveConfirm] = useState<{ tabId: string; action: 'close' } | null>(null);
@@ -2141,6 +2146,7 @@ function App() {
         onClearHistory={handleClearHistory}
         onClearAll={handleClearAll}
         onImportCurl={() => setShowImportCurl(true)}
+        onOpenMultitool={() => setShowMultitool(true)}
       />
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
@@ -2230,6 +2236,9 @@ function App() {
       )}
       {showJsonBuilder && (
         <JsonBuilder onClose={() => setShowJsonBuilder(false)} />
+      )}
+      {showMultitool && (
+        <MultitoolModal onClose={() => setShowMultitool(false)} />
       )}
       {runningRequest && (
         <CollectionRunner

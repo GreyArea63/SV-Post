@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Download, Upload, X, Settings, Trash2, Database, FileJson, Menu, Terminal } from 'lucide-react';
+import { Download, Upload, X, Settings, Trash2, Database, FileJson, Menu, Terminal, Sparkles } from 'lucide-react';
 import { Collection } from '../types';
 import {
   detectPostmanFileType,
@@ -15,8 +15,9 @@ interface FunctionMenuProps {
   onOpenJsonBuilder: () => void;
   onClearHistory?: () => void;
   onClearAll?: () => void;
-  /** ✅ Новый проп — открыть модал импорта из cURL */
   onImportCurl: () => void;
+  /** ✅ Новый проп — открыть модал Multitool */
+  onOpenMultitool: () => void;
 }
 
 interface Notification {
@@ -42,6 +43,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
   onClearHistory,
   onClearAll,
   onImportCurl,
+  onOpenMultitool,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [notification, setNotification] = useState<Notification | null>(null);
@@ -175,6 +177,12 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
           description: 'Вставить curl-команду',
           onClick: () => { setIsOpen(false); onImportCurl(); }
         },
+        {
+          icon: <Sparkles size={14} />,
+          label: 'Multitool',
+          description: '7 инструментов преобразования',
+          onClick: () => { setIsOpen(false); onOpenMultitool(); }
+        },
       ]
     },
     {
@@ -209,7 +217,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
         },
       ]
     }
-  ], [collections.length, handleImportClick, handleExportClick, handleShowStorageInfo, handleClearHistory, handleClearAll, onOpenJsonBuilder, onOpenEnvManager, onImportCurl]);
+  ], [collections.length, handleImportClick, handleExportClick, handleShowStorageInfo, handleClearHistory, handleClearAll, onOpenJsonBuilder, onOpenEnvManager, onImportCurl, onOpenMultitool]);
 
   return (
     <div className="relative" ref={menuRef}>
