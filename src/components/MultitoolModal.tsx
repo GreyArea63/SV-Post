@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   X, Copy, Check, Trash2, Wand2, Sparkles, AlertCircle,
-  Quote, ListFilter, Scissors, Link2, Clock,
+  ListFilter, Scissors, Link2,
 } from 'lucide-react';
 import {
   processInput,
@@ -16,52 +16,44 @@ interface MultitoolModalProps {
 }
 
 // ============================================================
-// Toggle-карточка (чекбокс)
+// Компактный Toggle (чекбокс + название)
 // ============================================================
 const ToggleCard = ({
   checked,
   onChange,
   icon,
   title,
-  hint,
   disabled,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   icon: React.ReactNode;
   title: string;
-  hint?: string;
   disabled?: boolean;
 }) => (
   <button
     type="button"
     onClick={() => !disabled && onChange(!checked)}
     disabled={disabled}
-    className={`flex items-start gap-2 p-2.5 rounded-lg border text-left transition-all w-full ${disabled
-        ? 'opacity-40 cursor-not-allowed border-[rgba(255,255,255,0.08)] bg-[#1e1e1e]'
+    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-left transition-all ${
+      disabled
+        ? 'opacity-40 cursor-not-allowed border-[rgba(255,255,255,0.06)] bg-[#1e1e1e]'
         : checked
           ? 'bg-indigo-500/15 border-indigo-500/40 text-gray-100'
           : 'border-[rgba(255,255,255,0.08)] bg-[#252525] text-gray-400 hover:border-[rgba(255,255,255,0.15)] hover:text-gray-300'
-      }`}
+    }`}
   >
-    <div className={`shrink-0 mt-0.5 ${checked && !disabled ? 'text-indigo-400' : 'text-gray-500'}`}>
+    <div className={`shrink-0 ${checked && !disabled ? 'text-indigo-400' : 'text-gray-500'}`}>
       {icon}
     </div>
-    <div className="flex-1 min-w-0">
-      <div className="text-xs font-medium leading-tight">{title}</div>
-      {hint && (
-        <div className={`text-[10px] mt-0.5 leading-tight ${checked && !disabled ? 'text-gray-400' : 'text-gray-600'}`}>
-          {hint}
-        </div>
-      )}
-    </div>
-    {/* Визуальный чекбокс */}
-    <div className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-all ${checked && !disabled
+    <span className="flex-1 text-xs font-medium truncate">{title}</span>
+    <div className={`shrink-0 w-3.5 h-3.5 rounded border flex items-center justify-center transition-all ${
+      checked && !disabled
         ? 'bg-indigo-500 border-indigo-400'
         : 'border-gray-600 bg-transparent'
-      }`}>
+    }`}>
       {checked && !disabled && (
-        <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+        <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 12 12" fill="none">
           <path d="M2 6L5 9L10 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       )}
@@ -70,46 +62,39 @@ const ToggleCard = ({
 );
 
 // ============================================================
-// Radio-карточка (взаимоисключающий выбор)
+// Компактный Radio
 // ============================================================
 const RadioCard = ({
   checked,
   onChange,
   title,
-  hint,
   disabled,
 }: {
   checked: boolean;
   onChange: () => void;
   title: string;
-  hint?: string;
   disabled?: boolean;
 }) => (
   <button
     type="button"
     onClick={() => !disabled && onChange()}
     disabled={disabled}
-    className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-all w-full ${disabled
-        ? 'opacity-40 cursor-not-allowed border-[rgba(255,255,255,0.08)] bg-[#1e1e1e]'
+    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-left transition-all ${
+      disabled
+        ? 'opacity-40 cursor-not-allowed border-[rgba(255,255,255,0.06)] bg-[#1e1e1e]'
         : checked
           ? 'bg-indigo-500/15 border-indigo-500/40 text-gray-100'
           : 'border-[rgba(255,255,255,0.08)] bg-[#252525] text-gray-400 hover:border-[rgba(255,255,255,0.15)] hover:text-gray-300'
-      }`}
+    }`}
   >
-    <div className={`shrink-0 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center ${checked && !disabled ? 'border-indigo-400' : 'border-gray-600'
-      }`}>
+    <div className={`shrink-0 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center ${
+      checked && !disabled ? 'border-indigo-400' : 'border-gray-600'
+    }`}>
       {checked && !disabled && (
         <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
       )}
     </div>
-    <div className="flex-1 min-w-0">
-      <div className="text-xs font-medium leading-tight">{title}</div>
-      {hint && (
-        <div className={`text-[10px] mt-0.5 leading-tight ${checked && !disabled ? 'text-gray-400' : 'text-gray-600'}`}>
-          {hint}
-        </div>
-      )}
-    </div>
+    <span className="flex-1 text-xs font-medium truncate">{title}</span>
   </button>
 );
 
@@ -124,10 +109,7 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // При закрытии модалки — состояние сбросится (компонент unmount)
-  // При следующем открытии — options = DEFAULT_OPTIONS
-
-  // Escape для закрытия
+  // Escape / Ctrl+Enter
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -141,7 +123,6 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options, input]);
 
-  // Хелперы для обновления опций
   const updateOption = useCallback(<K extends keyof MultitoolOptions>(
     key: K,
     value: MultitoolOptions[K]
@@ -149,7 +130,6 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
     setOptions(prev => ({ ...prev, [key]: value }));
   }, []);
 
-  // Валидация кнопки «Сформировать»
   const canProcess = useMemo(() => {
     if (!input.trim()) return false;
     if (!hasAnyOperation(options)) return false;
@@ -157,10 +137,8 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
     return true;
   }, [input, options]);
 
-  // Обработка
   const handleProcess = useCallback(() => {
     if (!canProcess) return;
-
     const result = processInput(input, options);
     setOutput(result.output);
     setDuplicates(result.duplicates || null);
@@ -168,7 +146,6 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
     setCopied(false);
   }, [canProcess, input, options]);
 
-  // Копирование
   const handleCopy = useCallback(async () => {
     if (!output) return;
     try {
@@ -187,7 +164,6 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
     }
   }, [output]);
 
-  // Очистка
   const handleClear = useCallback(() => {
     setInput('');
     setOutput('');
@@ -196,7 +172,7 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
     setCopied(false);
   }, []);
 
-  // Сброс output при изменении опций (чтобы не путать пользователя)
+  // Сброс output при изменении опций
   useEffect(() => {
     if (output) {
       setOutput('');
@@ -233,76 +209,57 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
 
-          {/* Подсказка о порядке */}
-          <div className="flex items-start gap-2 p-2.5 bg-blue-500/5 border border-blue-500/20 rounded-lg">
-            <Clock size={12} className="text-blue-400 shrink-0 mt-0.5" />
-            <p className="text-[10px] text-blue-300 leading-relaxed">
-              Операции применяются в порядке: <b>дубликаты</b> → <b>экранирование ' </b> → <b>экранирование "</b> → <b>кавычки</b> → <b>запятые</b>.
-            </p>
-          </div>
-
-          {/* Сетка операций */}
+          {/* Сетка операций — компактные чекбоксы */}
           <div className="grid grid-cols-3 gap-2">
             <ToggleCard
               checked={options.removeDuplicates}
               onChange={(v) => updateOption('removeDuplicates', v)}
               disabled={wfMode}
-              icon={<Wand2 size={14} />}
+              icon={<Wand2 size={13} />}
               title="Удалить дубликаты"
-              hint="уникальные строки"
             />
             <ToggleCard
               checked={options.escapeSingle}
               onChange={(v) => updateOption('escapeSingle', v)}
               disabled={wfMode}
-              icon={<Scissors size={14} />}
+              icon={<Scissors size={13} />}
               title="Экранирование одинарных"
-              hint="' → ''"
             />
             <ToggleCard
               checked={options.escapeDouble}
               onChange={(v) => updateOption('escapeDouble', v)}
               disabled={wfMode}
-              icon={<Scissors size={14} />}
+              icon={<Scissors size={13} />}
               title="Экранирование двойных"
-              hint={'\\"'}
             />
             <ToggleCard
               checked={options.addCommas}
               onChange={(v) => updateOption('addCommas', v)}
               disabled={wfMode}
-              icon={<ListFilter size={14} />}
+              icon={<ListFilter size={13} />}
               title="Проставить запятые"
-              hint="abc → abc,"
-            />
-            <ToggleCard
-              checked={false}
-              onChange={() => { }}
-              disabled
-              icon={<Quote size={14} />}
-              title="Оборачивание"
-              hint="см. ниже ↓"
             />
             <ToggleCard
               checked={wfMode}
               onChange={(v) => {
-                updateOption('workflowQuery', v);
                 if (v) {
-                  // При включении Workflow Query — сбрасываем остальные
                   setOptions(prev => ({
                     ...DEFAULT_OPTIONS,
                     workflowQuery: true,
                     workflowBase: prev.workflowBase,
                   }));
+                } else {
+                  updateOption('workflowQuery', false);
                 }
               }}
-              icon={<Link2 size={14} />}
+              icon={<Link2 size={13} />}
               title="Workflow Query"
-              hint="отдельный режим"
             />
+            {/* Пустая ячейка для выравнивания сетки 3x2 */}
+            <div />
           </div>
 
-          {/* Оборачивание — radio-группа */}
+          {/* Оборачивание — radio-группа (компактная) */}
           <div>
             <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
               Оборачивание в кавычки
@@ -319,14 +276,12 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
                 onChange={() => updateOption('wrapQuotes', 'single')}
                 disabled={wfMode}
                 title="Одинарные"
-                hint="'abc'"
               />
               <RadioCard
                 checked={options.wrapQuotes === 'double'}
                 onChange={() => updateOption('wrapQuotes', 'double')}
                 disabled={wfMode}
                 title="Двойные"
-                hint={'"abc"'}
               />
             </div>
           </div>
@@ -344,9 +299,6 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
                 placeholder="например, workflows"
                 className="w-full px-3 py-2 bg-[#252525] border border-[rgba(255,255,255,0.08)] rounded-lg text-sm text-gray-300 placeholder:text-gray-600 focus:outline-none focus:border-gray-500 transition-all font-mono"
               />
-              <p className="text-[10px] text-gray-600 mt-1">
-                Формат: <code className="font-mono text-gray-500">{`{base}?query=WorkflowId IN ("id1", "id2")`}</code>
-              </p>
             </div>
           )}
 
@@ -444,10 +396,11 @@ export const MultitoolModal: React.FC<MultitoolModalProps> = ({ onClose }) => {
               {output && (
                 <button
                   onClick={handleCopy}
-                  className={`flex items-center gap-1 px-2 py-1 text-[10px] rounded transition-all ${copied
+                  className={`flex items-center gap-1 px-2 py-1 text-[10px] rounded transition-all ${
+                    copied
                       ? 'text-emerald-400 bg-emerald-500/10'
                       : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
-                    }`}
+                  }`}
                 >
                   {copied ? <Check size={10} /> : <Copy size={10} />}
                   {copied ? 'Скопировано!' : 'Копировать'}
