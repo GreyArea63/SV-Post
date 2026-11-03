@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Download, Upload, X, Settings, Trash2, Database, FileJson, Menu, Terminal, Sparkles } from 'lucide-react';
-import { Collection } from '../types';
+import { Collection, Environment, KeyValuePair } from '../types';
 import {
   detectPostmanFileType,
   convertPostmanCollectionToApp,
+  convertPostmanEnvToApp,
+  convertPostmanGlobalsToApp,
 } from '../utils/helpers';
 import { storage } from '../utils/storage';
 
@@ -16,7 +18,6 @@ interface FunctionMenuProps {
   onClearHistory?: () => void;
   onClearAll?: () => void;
   onImportCurl: () => void;
-  /** ✅ Новый проп — открыть модал Multitool */
   onOpenMultitool: () => void;
 }
 
@@ -87,9 +88,71 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      let importedCollections: Collection[] = [];
 
+      // ✅ 1. Проверка на родной формат SV-Post (environments)
+      if (data.type === 'sv-post-environments' && Array.isArray(data.environments)) {
+        // Импортируем окружения
+        const envs: Environment[] = data.environments;
+        const globals: KeyValuePair[] = data.globalVariables || [];
+
+        // Note: FunctionMenu не имеет пропсов для сохранения env, 
+        // поэтому здесь мы вынуждены кинуть событие или использовать storage напрямую
+        const currentEnvs = await storage.getEnvironments();
+        // Простой мердж по именам
+        const mergedEnvs = [...currentEnvs];
+        envs.forEach(newEnv => {
+          const idx = mergedEnvs.findIndex(e => e.name === newEnv.name);
+          if (idx >= 0) mergedEnvs[idx] = newEnv;
+          else mergedEnvs.push(newEnv);
+        });
+        await storage.saveEnvironments(mergedEnvs);
+
+        if (globals.length > 0) {
+          const currentGlobals = await storage.getGlobalVariables();
+          const mergedGlobals = [...currentGlobals];
+          globals.forEach(newVar => {
+            const idx = mergedGlobals.findIndex(g => g.key === newVar.key);
+            if (idx >= 0) mergedGlobals[idx] = newVar;
+            else mergedGlobals.push(newVar);
+          });
+          await storage.saveGlobalVariables(mergedGlobals);
+        }
+
+        showNotification('success', `Импортировано окружений: ${envs.length}`);
+        // Перезагрузка страницы для подтягивания новых данных в App
+        setTimeout(() => window.location.reload(), 1000);
+        return;
+      }
+
+      // ✅ 2. Проверка на Postman Environment / Globals
       const fileType = detectPostmanFileType(data);
+      if (fileType === 'environment' || fileType === 'globals') {
+        const currentEnvs = await storage.getEnvironments();
+        const currentGlobals = await storage.getGlobalVariables();
+
+        if (fileType === 'environment') {
+          const importedEnv = convertPostmanEnvToApp(data);
+          const idx = currentEnvs.findIndex(e => e.name === importedEnv.name);
+          if (idx >= 0) currentEnvs[idx] = importedEnv;
+          else currentEnvs.push(importedEnv);
+          await storage.saveEnvironments(currentEnvs);
+          showNotification('success', `Окружение "${importedEnv.name}" импортировано`);
+        } else {
+          const importedGlobals = convertPostmanGlobalsToApp(data);
+          importedGlobals.forEach(newVar => {
+            const idx = currentGlobals.findIndex(g => g.key === newVar.key);
+            if (idx >= 0) currentGlobals[idx] = newVar;
+            else currentGlobals.push(newVar);
+          });
+          await storage.saveGlobalVariables(currentGlobals);
+          showNotification('success', `Глобальные переменные импортированы`);
+        }
+        setTimeout(() => window.location.reload(), 1000);
+        return;
+      }
+
+      // ✅ 3. Импорт коллекций (существующая логика)
+      let importedCollections: Collection[] = [];
 
       if (fileType === 'collection') {
         importedCollections = [convertPostmanCollectionToApp(data)];
@@ -98,7 +161,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       } else if (Array.isArray(data)) {
         importedCollections = data;
       } else {
-        throw new Error('Неверный формат файла. Ожидается Postman Collection или SV-Post export.');
+        throw new Error('Неверный формат файла. Ожидается Postman Collection, Postman Environment или SV-Post export.');
       }
 
       const validCollections = importedCollections
@@ -114,7 +177,7 @@ export const FunctionMenu: React.FC<FunctionMenuProps> = ({
       }
 
       onImport(validCollections);
-      showNotification('success', `Импортировано: ${validCollections.length} колл.`);
+      showNotification('success', `Импортировано коллекций: ${validCollections.length}`);
     } catch (err: any) {
       showNotification('error', `Ошибка: ${err.message || 'неизвестно'}`);
     } finally {
