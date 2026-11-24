@@ -186,14 +186,22 @@ export const generateCurl = (
       body.form
         .filter(f => f.enabled && f.key)
         .forEach(f => {
-          parts.push('-F', escapeArg(`${f.key}=${resolve(f.value)}`));
+          parts.push('-F', escapeArg(`${resolve(f.key)}=${resolve(f.value)}`));
         });
-    } else if (body.type === 'x-www-form-urlencoded' && body.form && body.form.length > 0) {
-      const encoded = body.form
-        .filter(f => f.enabled && f.key)
-        .map(f => `${encodeURIComponent(f.key)}=${encodeURIComponent(resolve(f.value))}`)
-        .join('&');
-      parts.push('--data-raw', escapeArg(encoded));
+    } else if (body.type === 'x-www-form-urlencoded') {
+      if (body.form && body.form.length > 0) {
+        // ✅ Как в Postman: --data-urlencode 'key=value' для каждой пары
+        body.form
+          .filter(f => f.enabled && f.key)
+          .forEach(f => {
+            const k = resolve(f.key);
+            const v = resolve(f.value);
+            parts.push('--data-urlencode', escapeArg(`${k}=${v}`));
+          });
+      } else if (body.content) {
+        // Fallback: если form пуст, а content есть — используем --data-raw
+        parts.push('--data-raw', escapeArg(resolve(body.content)));
+      }
     } else if (body.type === 'binary') {
       parts.push('--data-binary', escapeArg(resolve(body.content)));
     } else if (body.type === 'graphql') {

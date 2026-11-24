@@ -721,7 +721,15 @@ function App() {
       url: replaceVariables(request.url, allVariables),
       headers: request.headers.map(h => ({ ...h, value: replaceVariables(h.value, allVariables) })),
       queryParams: request.queryParams.map(p => ({ ...p, value: replaceVariables(p.value, allVariables) })),
-      body: { ...request.body, content: replaceVariables(request.body.content, allVariables) },
+      body: {
+        ...request.body,
+        content: replaceVariables(request.body.content, allVariables),
+        form: request.body.form?.map(f => ({
+          ...f,
+          key: replaceVariables(f.key, allVariables),
+          value: replaceVariables(f.value, allVariables),
+        })),
+      },
       auth: request.auth
         ? {
           ...request.auth,

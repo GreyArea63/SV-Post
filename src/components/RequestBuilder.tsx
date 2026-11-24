@@ -7,13 +7,16 @@ import {
   HttpRequest, KeyValuePair, RequestBody, Environment, Collection, RequestAuth,
   ScriptExecutionResult, RequestSettings
 } from '../types';
-import { findVariablesInText, isVariableResolved } from '../utils/helpers';
+import { findVariablesInText, isVariableResolved, generateId } from '../utils/helpers';
 import { getMethodColor } from '../utils/methodColors';
 import { JsonEditor } from './JsonEditor';
 import { SchemaEditor } from './SchemaEditor';
 import { KeyValueEditor } from './KeyValueEditor';
+import { UrlencodedEditor } from './UrlencodedEditor';
+import { FormDataEditor } from './FormDataEditor';
 import { VariableTooltip } from './VariableTooltip';
 import { generateCurl } from '../utils/curlGenerator';
+import { parseUrlencoded, serializeUrlencoded, looksLikeUrlencoded } from '../utils/urlencoded';
 import {
   GENERIC_JSON_SCHEMA,
   M30_PRODUCT_SCHEMA,
@@ -120,6 +123,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
       ...request.headers.map(h => `${h.key}=${h.value}`),
       ...request.queryParams.map(p => `${p.key}=${p.value}`),
       request.body.content,
+      ...(request.body.form?.map(f => `${f.key}=${f.value}`) || []),
     ];
     const vars = new Set<string>();
     allTexts.forEach(text => {
@@ -185,7 +189,7 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
 
   const addKeyValuePair = useCallback((field: 'headers' | 'queryParams') => {
     const newItem: KeyValuePair = {
-      id: Math.random().toString(36).substring(2) + Date.now().toString(36),
+      id: generateId(),
       key: '',
       value: '',
       enabled: true,
@@ -201,30 +205,41 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
   const updateBody = useCallback((body: RequestBody) => {
     const newBody = { ...request.body, ...body };
 
-    if ((body.type === 'form-data' || body.type === 'x-www-form-urlencoded') &&
-      !body.form && request.body.content) {
-      try {
-        const parsed = JSON.parse(request.body.content);
-        if (typeof parsed === 'object' && parsed !== null) {
-          newBody.form = Object.entries(parsed).map(([key, value]) => ({
-            id: Math.random().toString(36).substring(2) + Date.now().toString(36),
-            key,
-            value: String(value),
-            enabled: true,
-          }));
+    const isFormType = body.type === 'form-data' || body.type === 'x-www-form-urlencoded';
+    const isRawType = body.type === 'raw' || body.type === 'json' || body.type === 'graphql';
+
+    // ===== Переход в urlencoded/form-data: конвертация content → form =====
+    if (isFormType && (!body.form || body.form.length === 0) && request.body.content) {
+      if (body.type === 'x-www-form-urlencoded' && looksLikeUrlencoded(request.body.content)) {
+        newBody.form = parseUrlencoded(request.body.content);
+      } else {
+        try {
+          const parsed = JSON.parse(request.body.content);
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            newBody.form = Object.entries(parsed).map(([key, value]) => ({
+              id: generateId(),
+              key,
+              value: String(value),
+              enabled: true,
+            }));
+          }
+        } catch {
+          // Не JSON — оставляем form пустым
         }
-      } catch {
-        // Если не JSON — оставляем form пустым
       }
     }
 
-    if ((body.type === 'raw' || body.type === 'json' || body.type === 'graphql') &&
-      request.body.form && request.body.form.length > 0 && !body.content) {
-      const obj: Record<string, string> = {};
-      request.body.form.forEach(f => {
-        if (f.enabled && f.key) obj[f.key] = f.value;
-      });
-      newBody.content = JSON.stringify(obj, null, 2);
+    // ===== Переход в raw/json: конвертация form → content =====
+    if (isRawType && request.body.form && request.body.form.length > 0 && !body.content) {
+      if (body.type === 'raw') {
+        newBody.content = serializeUrlencoded(request.body.form);
+      } else {
+        const obj: Record<string, string> = {};
+        request.body.form.forEach((f) => {
+          if (f.enabled && f.key) obj[f.key] = f.value;
+        });
+        newBody.content = JSON.stringify(obj, null, 2);
+      }
     }
 
     onChange({ ...request, body: newBody });
@@ -695,10 +710,36 @@ export const RequestBuilder: React.FC<RequestBuilderProps> = ({
               </div>
             )}
 
-            {['form-data', 'x-www-form-urlencoded', 'binary', 'none'].includes(request.body.type) && (
+            {request.body.type === 'none' && (
               <div className="flex-1">
                 <div className="text-gray-500 text-sm text-center py-8">
-                  {request.body.type === 'none' ? 'Тело запроса не отправляется' : `${request.body.type} editor (в разработке)`}
+                  Тело запроса не отправляется
+                </div>
+              </div>
+            )}
+
+            {request.body.type === 'x-www-form-urlencoded' && (
+              <div className="flex-1 min-h-0">
+                <UrlencodedEditor
+                  rows={request.body.form || []}
+                  onChange={(form) => updateBody({ ...request.body, form })}
+                />
+              </div>
+            )}
+
+            {request.body.type === 'form-data' && (
+              <div className="flex-1 min-h-0">
+                <FormDataEditor
+                  rows={request.body.form || []}
+                  onChange={(form) => updateBody({ ...request.body, form })}
+                />
+              </div>
+            )}
+
+            {request.body.type === 'binary' && (
+              <div className="flex-1">
+                <div className="text-gray-500 text-sm text-center py-8">
+                  binary (в разработке)
                 </div>
               </div>
             )}

@@ -468,7 +468,15 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               url: replaceVariables(req.url, liveVars),
               headers: req.headers.map(h => ({ ...h, value: replaceVariables(h.value, liveVars) })),
               queryParams: req.queryParams.map(p => ({ ...p, value: replaceVariables(p.value, liveVars) })),
-              body: { ...req.body, content: replaceVariables(req.body.content, liveVars) },
+              body: {
+                ...req.body,
+                content: replaceVariables(req.body.content, liveVars),
+                form: req.body.form?.map(f => ({
+                  ...f,
+                  key: replaceVariables(f.key, liveVars),
+                  value: replaceVariables(f.value, liveVars),
+                })),
+              },
               auth: req.auth ? {
                 ...req.auth,
                 token: req.auth.token ? replaceVariables(req.auth.token, liveVars) : req.auth.token,
@@ -698,7 +706,15 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                 url: replaceVariables(req.url, liveVars),
                 headers: req.headers.map(h => ({ ...h, value: replaceVariables(h.value, liveVars) })),
                 queryParams: req.queryParams.map(p => ({ ...p, value: replaceVariables(p.value, liveVars) })),
-                body: { ...req.body, content: replaceVariables(req.body.content, liveVars) },
+                body: {
+                  ...req.body,
+                  content: replaceVariables(req.body.content, liveVars),
+                  form: req.body.form?.map(f => ({
+                    ...f,
+                    key: replaceVariables(f.key, liveVars),
+                    value: replaceVariables(f.value, liveVars),
+                  })),
+                },
               };
               const errorHeaders = parseKeyValuePairs(processedReqForError.headers);
               let errorUrl = processedReqForError.url;
@@ -744,7 +760,15 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               url: replaceVariables(req.url, liveVars),
               headers: req.headers.map(h => ({ ...h, value: replaceVariables(h.value, liveVars) })),
               queryParams: req.queryParams.map(p => ({ ...p, value: replaceVariables(p.value, liveVars) })),
-              body: { ...req.body, content: replaceVariables(req.body.content, liveVars) },
+              body: {
+                ...req.body,
+                content: replaceVariables(req.body.content, liveVars),
+                form: req.body.form?.map(f => ({
+                  ...f,
+                  key: replaceVariables(f.key, liveVars),
+                  value: replaceVariables(f.value, liveVars),
+                })),
+              },
             };
             const errorHeaders = parseKeyValuePairs(processedReqForError.headers);
             let errorUrl = processedReqForError.url;
