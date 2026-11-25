@@ -3,6 +3,9 @@ export interface KeyValuePair {
   key: string;
   value: string;
   enabled: boolean;
+  // ✅ Новые поля для form-data (обратная совместимость сохранена)
+  type?: 'text' | 'file';
+  files?: string[];
 }
 
 export interface RequestAuth {
@@ -49,6 +52,7 @@ export interface HttpRequest {
     followRedirects?: boolean;
     timeout?: number;
   };
+  documentation?: string; // ✅ Добавлено, так как используется в App.tsx
 }
 
 export interface HttpResponse {
@@ -67,9 +71,17 @@ export interface HistoryItem {
   timestamp: number;
 }
 
+export interface CollectionFolder {
+  id: string;
+  name: string;
+  folders: CollectionFolder[];
+  requests: HttpRequest[];
+}
+
 export interface Collection {
   id: string;
   name: string;
+  folders: CollectionFolder[];
   requests: HttpRequest[];
 }
 
@@ -77,6 +89,7 @@ export interface Environment {
   id: string;
   name: string;
   variables: KeyValuePair[];
+  globalTestScript?: string; // ✅ Добавлено, так как используется
 }
 
 // ============ Postman Import Types ============
@@ -112,3 +125,20 @@ export interface PostmanCollectionFile {
 export type ImportFileType = 'environment' | 'globals' | 'collection' | 'unknown';
 
 export type ConflictAction = 'replace' | 'copy' | 'skip';
+
+export interface ScriptExecutionResult {
+  testResults: TestResult[];
+  logs: string[];
+  error?: string;
+  skipped?: boolean;
+  retry?: boolean;
+  nextRequest?: string | null;
+  environmentChanges: { key: string; value: string; enabled: boolean }[];
+  globalsChanges: { key: string; value: string; enabled: boolean }[];
+}
+
+export interface TestResult {
+  name: string;
+  passed: boolean;
+  error?: string;
+}

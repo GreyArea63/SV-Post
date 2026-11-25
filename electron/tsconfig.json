@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "CommonJS",
-    "moduleResolution": "node10",
+    "moduleResolution": "node",
     "lib": [
       "ES2020",
       "DOM",
@@ -10,7 +10,7 @@
     ],
     "outDir": "../dist-electron",
     "rootDir": ".",
-    "strict": false,
+    "strict": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
@@ -21,8 +21,7 @@
     "types": [
       "node",
       "electron"
-    ],
-    "ignoreDeprecations": "6.0"
+    ]
   },
   "include": [
     "**/*.ts"

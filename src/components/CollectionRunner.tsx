@@ -191,8 +191,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const onErrorRef = useRef(onError);
 
-  // ✅ Читаем АКТУАЛЬНЫЕ данные из props через ref на случай, если
-  // модалка держит устаревший снимок (например, env обновили после открытия)
   const environmentsRef = useRef(environments);
   const globalVariablesRef = useRef(globalVariables);
   const activeEnvIdRef = useRef(activeEnvId);
@@ -274,7 +272,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
   ): Promise<ScriptExecutionResult | null> => {
     let finalScript = script || '';
     if (scriptType === 'test') {
-      // ✅ Берём актуальный env
       const envsNow = environmentsRef.current;
       const envIdNow = activeEnvIdRef.current;
       const env = envsNow.find(e => e.id === envIdNow);
@@ -323,7 +320,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     setCurrentIteration(0);
     abortControllerRef.current = new AbortController();
 
-    // ✅ Читаем актуальные данные из ref — на случай, если props устарели
     const envsNow = environmentsRef.current;
     const globalsNow = globalVariablesRef.current;
     const envIdNow = activeEnvIdRef.current;
@@ -335,7 +331,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
     const totalRequests = requests.length;
     const effectiveIterations = dataRows.length;
 
-    // ✅ Диагностика — что видит Runner на старте
     const tokenVar = baseEnvVars.find(v => v.key === 'token');
     console.log('[Runner] START', {
       envsCount: envsNow.length,
@@ -349,7 +344,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
 
     let runnerVars = emptyVars();
 
-    // ============ ИТЕРАЦИИ ============
     iterationLoop:
     for (let i = 0; i < effectiveIterations; i++) {
       if (isCancelledRef.current) break;
@@ -360,7 +354,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
         id: generateId(), key, value: String(value), enabled: true,
       }));
 
-      // ============ ЗАПРОСЫ (с поддержкой setNextRequest) ============
       let j = 0;
       let flowJumps = 0;
 
@@ -386,7 +379,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
 
         const req = requests[j];
 
-        // === PRE-REQUEST + REQUEST + TEST с retry ===
         let attempt = 0;
         let accumulatedLogs: string[] = [];
         let skipThisRequest = false;
@@ -395,7 +387,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
         while (attempt <= MAX_SCRIPT_RETRIES) {
           const startTime = Date.now();
 
-          // 1. Pre-request
           let preRequestResult: ScriptExecutionResult | null = null;
           if (req.scripts?.preRequest?.trim()) {
             preRequestResult = await runScript(
@@ -459,7 +450,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
             }
           }
 
-          // 2. Формируем и шлём запрос
           const liveVars = buildVariables(baseEnvVars, baseGlobals, dataVars, runnerVars);
 
           try {
@@ -521,7 +511,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               }
             }
 
-            // ✅ FALLBACK: если Authorization остался с неразрешёнными {{...}} — добиваем
             const authKey = Object.keys(headers).find(k => k.toLowerCase() === 'authorization');
             if (authKey && typeof headers[authKey] === 'string' && headers[authKey].includes('{{')) {
               const before = headers[authKey];
@@ -529,7 +518,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               accumulatedLogs.push(`[DEBUG] Fallback resolve Authorization: "${before}" → "${maskSecret(headers[authKey])}"`);
             }
 
-            // ✅ ДИАГНОСТИКА: фактический Authorization + token из env
             const finalAuthHeader = headers['Authorization'] || headers['authorization'];
             const envToken = liveVars.find(v => v.key === 'token')?.value;
             if (finalAuthHeader) {
@@ -572,7 +560,34 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               } else if (processedReq.body.type === 'form-data') {
                 if (processedReq.body.form && processedReq.body.form.length > 0) {
                   const fd = new FormData();
-                  processedReq.body.form.forEach(f => { if (f.enabled && f.key) fd.append(f.key, f.value); });
+                  
+                  // Текстовые поля
+                  processedReq.body.form.forEach((f: any) => {
+                    if (!f.enabled || !f.key) return;
+                    if ((f.type || 'text') === 'text') {
+                      fd.append(f.key, f.value);
+                    }
+                  });
+
+                  // Файлы
+                  const filesToLoad = processedReq.body.form
+                    .filter((f: any) => f.enabled && f.key && f.type === 'file' && f.files && f.files.length > 0)
+                    .flatMap((f: any) => f.files.map((filePath: string) => ({ fieldKey: f.key, filePath })));
+
+                  if (filesToLoad.length > 0 && window.electronAPI?.readFiles) {
+                    const result = await window.electronAPI.readFiles(filesToLoad.map((f: any) => f.filePath));
+                    if (result.success && result.files) {
+                      result.files.forEach((file, index) => {
+                        const target = filesToLoad[index];
+                        const safeBuffer = file.buffer.buffer.slice(file.buffer.byteOffset, file.buffer.byteOffset + file.buffer.byteLength) as ArrayBuffer;
+                        const blob = new Blob([safeBuffer], { type: 'application/octet-stream' });
+                        fd.append(target.fieldKey, blob, file.name);
+                      });
+                    } else {
+                      accumulatedLogs.push(`[DEBUG] Ошибка чтения файлов: ${result.error}`);
+                    }
+                  }
+
                   config.data = fd;
                 }
               } else if (processedReq.body.type === 'graphql') {
@@ -598,7 +613,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               size: new Blob([JSON.stringify(axiosResponse.data)]).size,
             };
 
-            // 3. Test script
             let testResult: ScriptExecutionResult | null = null;
             const hasTestScript = req.scripts?.test?.trim() || activeEnv?.globalTestScript?.trim();
             if (hasTestScript) {
@@ -622,7 +636,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               }
             }
 
-            // 4. Retry?
             if (testResult?.retry && attempt < MAX_SCRIPT_RETRIES) {
               attempt++;
               accumulatedLogs.push(`[Retry] Attempt ${attempt}/${MAX_SCRIPT_RETRIES} after pm.retryRequest()`);
@@ -632,7 +645,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               continue;
             }
 
-            // 5. Финализация
             const newResult: RunResult = {
               iteration: i + 1,
               requestIndex: j,
@@ -723,7 +735,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
                 errorUrl += (errorUrl.includes('?') ? '&' : '?') + new URLSearchParams(errorQP).toString();
               }
 
-              // ✅ Также логируем фактические headers при ошибке
               const actualAuth = (err.config?.headers?.Authorization || err.config?.headers?.authorization) as string | undefined;
               if (actualAuth) {
                 accumulatedLogs.push(`[DEBUG] Sent Authorization (from axios config): ${maskSecret(String(actualAuth))}`);
@@ -754,7 +765,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
               break;
             }
 
-            // Network error
             const processedReqForError = {
               ...req,
               url: replaceVariables(req.url, liveVars),
@@ -802,7 +812,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
 
         if (skipThisRequest && isCancelledRef.current) break;
 
-        // ============ ОБРАБОТКА setNextRequest ============
         if (nextRequestDirective === null) {
           accumulatedLogs.push('[pm.execution.setNextRequest] Остановка цепочки');
           break iterationLoop;
@@ -823,7 +832,6 @@ export const CollectionRunner: React.FC<CollectionRunnerProps> = ({
           }
         }
 
-        // Обычная задержка и переход к следующему запросу
         if (delay > 0 && !isCancelledRef.current) {
           await new Promise(resolve => setTimeout(resolve, delay));
         } else if (!isCancelledRef.current) {

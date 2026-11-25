@@ -3,7 +3,6 @@ import { contextBridge, ipcRenderer } from 'electron';
 console.log('Preload script loaded');
 
 const electronAPI = {
-  // === Общие методы ===
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('get-app-version'),
   getPlatform: (): Promise<string> => ipcRenderer.invoke('get-platform'),
   getAppPath: (): Promise<string> => ipcRenderer.invoke('get-app-path'),
@@ -19,21 +18,17 @@ const electronAPI = {
     console.log('Opening external URL:', url);
   },
 
-  // === Импорт файлов (Postman) ===
-  openFile: (): Promise<{
-    success: boolean;
-    content?: string;
-    fileName?: string;
-    canceled?: boolean;
-    error?: string;
-  }> => ipcRenderer.invoke('dialog:open-file'),
+  openFile: (): Promise<{ success: boolean; content?: string; fileName?: string; canceled?: boolean; error?: string; }> => ipcRenderer.invoke('dialog:open-file'),
 
-  // === Методы управления обновлениями ===
+  // ✅ Новые методы для файлов
+  openFiles: (): Promise<{ success: boolean; filePaths?: string[]; canceled?: boolean; error?: string; }> => ipcRenderer.invoke('dialog:open-files'),
+  
+  readFiles: (paths: string[]): Promise<{ success: boolean; files?: { path: string; name: string; buffer: Uint8Array }[]; error?: string; }> => ipcRenderer.invoke('read-files', paths),
+
   checkForUpdates: (): Promise<any> => ipcRenderer.invoke('check-for-updates'),
   downloadUpdate: (): Promise<any> => ipcRenderer.invoke('download-update'),
   installUpdate: (): Promise<void> => ipcRenderer.invoke('install-update'),
 
-  // === Слушатели событий обновлений ===
   onUpdateChecking: (callback: () => void) => {
     const listener = () => callback();
     ipcRenderer.on('update-checking', listener);
@@ -65,7 +60,6 @@ const electronAPI = {
     return () => ipcRenderer.removeListener('update-downloaded', listener);
   },
 
-  // === Удаление всех слушателей обновлений ===
   removeAllUpdateListeners: () => {
     ipcRenderer.removeAllListeners('update-checking');
     ipcRenderer.removeAllListeners('update-available');

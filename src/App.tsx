@@ -423,7 +423,6 @@ const DatabaseErrorModal = memo(({
 ));
 DatabaseErrorModal.displayName = 'DatabaseErrorModal';
 
-// ✅ Минималистичная заглушка при отсутствии открытых вкладок
 const EmptyState = memo(({ onNewTab }: { onNewTab: () => void }) => (
   <div className="flex-1 flex items-center justify-center bg-[#1e1e1e]">
     <div className="text-center max-w-sm px-6">
@@ -522,7 +521,6 @@ HeaderBar.displayName = 'HeaderBar';
 // ГЛАВНЫЙ КОМПОНЕНТ
 // ============================================================
 function App() {
-  // ✅ ПУСТОЙ СТАРТ — никаких автовкладок
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string>('');
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -572,9 +570,6 @@ function App() {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
-  // ============================================================
-  // ЗАГРУЗКА ДАННЫХ
-  // ============================================================
   useEffect(() => {
     if (isInitialized) return;
     let isMounted = true;
@@ -669,9 +664,6 @@ function App() {
     return environments.find(env => env.id === activeEnvId) || null;
   }, [environments, activeEnvId]);
 
-  // ============================================================
-  // processRequest
-  // ============================================================
   const processRequest = useCallback((
     request: HttpRequest,
     overrides?: ScriptOverrides
@@ -745,9 +737,6 @@ function App() {
     };
   }, [getActiveEnvironment, globalVariables]);
 
-  // ============================================================
-  // executeScript
-  // ============================================================
   const executeScript = useCallback(async (
     scriptType: 'preRequest' | 'test',
     script: string,
@@ -794,9 +783,6 @@ function App() {
     return await runner.runScript(processedScript, httpResponse || undefined);
   }, [getActiveEnvironment, globalVariables]);
 
-  // ============================================================
-  // applyScriptChanges
-  // ============================================================
   const applyScriptChanges = useCallback(async (result: ScriptExecutionResult) => {
     if (result.environmentChanges.length > 0) {
       if (activeEnvId) {
@@ -882,9 +868,6 @@ function App() {
     return result;
   }, [activeTab, executeScript, showToast, applyScriptChanges]);
 
-  // ============================================================
-  // handleSend
-  // ============================================================
   const handleSend = useCallback(async () => {
     if (!activeTab) return;
 
@@ -1038,9 +1021,37 @@ function App() {
             case 'form-data':
               if (processedRequest.body.form && processedRequest.body.form.length > 0) {
                 const formData = new FormData();
+                
+                // Обрабатываем текстовые поля
                 processedRequest.body.form.forEach(field => {
-                  if (field.enabled && field.key) formData.append(field.key, field.value);
+                  if (!field.enabled || !field.key) return;
+                  const type = (field as any).type || 'text';
+                  if (type === 'text') {
+                    formData.append(field.key, field.value);
+                  }
                 });
+
+                // Обрабатываем файлы
+                const filesToLoad = processedRequest.body.form
+                  .filter(field => field.enabled && field.key && (field as any).type === 'file' && (field as any).files && (field as any).files.length > 0)
+                  .flatMap(field => (field as any).files.map((filePath: string) => ({ fieldKey: field.key, filePath })));
+
+                if (filesToLoad.length > 0 && window.electronAPI?.readFiles) {
+                  const result = await window.electronAPI.readFiles(filesToLoad.map((f: any) => f.filePath));
+                  if (result.success && result.files) {
+                    result.files.forEach((file, index) => {
+                      const target = filesToLoad[index];
+                      // ✅ Приводим тип буфера к ArrayBuffer
+                      const safeBuffer = file.buffer.buffer.slice(file.buffer.byteOffset, file.buffer.byteOffset + file.buffer.byteLength) as ArrayBuffer;
+                      const blob = new Blob([safeBuffer], { type: 'application/octet-stream' });
+                      formData.append(target.fieldKey, blob, file.name);
+                    });
+                  } else {
+                    console.warn('Не удалось прочитать файлы:', result.error);
+                    showToast('error', `Ошибка чтения файлов: ${result.error}`);
+                  }
+                }
+
                 config.data = formData;
                 removeHeaderCaseInsensitive(headers, 'Content-Type');
               }
@@ -1211,7 +1222,6 @@ function App() {
     setActiveTabId(tabId);
   }, []);
 
-  // ✅ Не создаёт вкладку при закрытии последней — оставляет пустой экран
   const performTabClose = useCallback((tabId: string, currentTabs: Tab[]) => {
     const newTabs = currentTabs.filter(tab => tab.id !== tabId);
     if (newTabs.length === 0) {
@@ -1250,7 +1260,6 @@ function App() {
   }, [tabs.length, showToast]);
 
   const handleMethodChange = useCallback((newMethod: string) => {
-    // ✅ Если нет активной вкладки — создаём новую с этим методом
     if (!activeTab) {
       if (tabs.length >= MAX_TABS) {
         showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
@@ -1395,9 +1404,6 @@ function App() {
     setShowSaveConfirm(null);
   }, [showSaveConfirm, performTabClose]);
 
-  // ============================================================
-  // КОЛЛЕКЦИИ — CRUD
-  // ============================================================
   const handleAddCollection = useCallback(() => { setShowNewCollectionModal(true); }, []);
 
   const handleCreateCollection = useCallback(async (name: string) => {
@@ -1423,7 +1429,6 @@ function App() {
     showToast('success', `Коллекция переименована в "${newName}"`);
   }, [collections, showToast]);
 
-  // ✅ Не создаёт вкладку при удалении коллекции
   const handleDeleteCollection = useCallback(async (collectionId: string) => {
     const updatedCollections = collections.filter(c => c.id !== collectionId);
     setCollections(updatedCollections);
@@ -1442,9 +1447,6 @@ function App() {
     showToast('success', 'Коллекция удалена');
   }, [collections, activeTabId, showToast]);
 
-  // ============================================================
-  // ПАПКИ — CRUD
-  // ============================================================
   const handleCreateFolder = useCallback((
     collectionId: string,
     parentFolderId: string | null,
@@ -1505,9 +1507,6 @@ function App() {
     showToast('success', 'Папка удалена');
   }, [collections, showToast]);
 
-  // ============================================================
-  // ПЕРЕМЕЩЕНИЕ ЗАПРОСА (Drag & Drop)
-  // ============================================================
   const handleMoveRequest = useCallback(async (
     sourceCollectionId: string,
     sourceFolderId: string | null,
@@ -1587,9 +1586,6 @@ function App() {
     showToast('success', `Запрос "${request.name}" перемещён`);
   }, [collections, showToast]);
 
-  // ============================================================
-  // ЗАПРОСЫ В КОЛЛЕКЦИЯХ — CRUD
-  // ============================================================
   const handleRenameRequest = useCallback(async (
     collectionId: string,
     requestId: string,
@@ -1630,7 +1626,6 @@ function App() {
     showToast('success', `Запрос переименован в "${newName}"`);
   }, [collections, showToast]);
 
-  // ✅ Не создаёт вкладку при удалении запроса
   const handleDeleteRequest = useCallback(async (
     collectionId: string,
     requestId: string,
@@ -1704,9 +1699,6 @@ function App() {
     showToast('success', `Запрос "${duplicate.name}" создан`);
   }, [collections, showToast]);
 
-  // ============================================================
-  // ИМПОРТ / ЭКСПОРТ
-  // ============================================================
   const handleImportCollections = useCallback(async (importedCollections: Collection[]) => {
     const updated = mergeCollections(collections, importedCollections);
     setCollections(updated);
@@ -1728,7 +1720,6 @@ function App() {
     showToast('success', 'Коллекции экспортированы');
   }, [collections, showToast]);
 
-  // ✅ Корректно создаёт вкладку при выборе запроса из коллекции
   const handleSelectRequest = useCallback((
     collectionId: string,
     requestId: string,
@@ -1748,7 +1739,6 @@ function App() {
       return;
     }
 
-    // Если есть активная пустая вкладка — используем её
     if (activeTab && isTabEmpty(activeTab)) {
       setTabs(prevTabs => prevTabs.map(tab =>
         tab.id === activeTabId
@@ -1766,7 +1756,6 @@ function App() {
       return;
     }
 
-    // Иначе — создаём новую вкладку
     if (tabs.length >= MAX_TABS) {
       showToast('error', `Достигнут лимит в ${MAX_TABS} вкладок`);
       return;
@@ -2083,9 +2072,6 @@ function App() {
     showToast('success', `Импортирован запрос: ${request.method} ${request.url}`);
   }, [activeTab, activeTabId, tabs.length, showToast]);
 
-  // ============================================================
-  // ГОРЯЧИЕ КЛАВИШИ
-  // ============================================================
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
@@ -2225,7 +2211,6 @@ function App() {
               </div>
             </div>
           ) : (
-            // ✅ Заглушка при отсутствии открытых вкладок
             <EmptyState onNewTab={handleNewTab} />
           )}
         </div>

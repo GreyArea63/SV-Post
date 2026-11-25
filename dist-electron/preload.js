@@ -3,7 +3,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const electron_1 = require("electron");
 console.log('Preload script loaded');
 const electronAPI = {
-    // === Общие методы ===
     getAppVersion: () => electron_1.ipcRenderer.invoke('get-app-version'),
     getPlatform: () => electron_1.ipcRenderer.invoke('get-platform'),
     getAppPath: () => electron_1.ipcRenderer.invoke('get-app-path'),
@@ -16,13 +15,13 @@ const electronAPI = {
     openExternal: (url) => {
         console.log('Opening external URL:', url);
     },
-    // === Импорт файлов (Postman) ===
     openFile: () => electron_1.ipcRenderer.invoke('dialog:open-file'),
-    // === Методы управления обновлениями ===
+    // ✅ Новые методы для файлов
+    openFiles: () => electron_1.ipcRenderer.invoke('dialog:open-files'),
+    readFiles: (paths) => electron_1.ipcRenderer.invoke('read-files', paths),
     checkForUpdates: () => electron_1.ipcRenderer.invoke('check-for-updates'),
     downloadUpdate: () => electron_1.ipcRenderer.invoke('download-update'),
     installUpdate: () => electron_1.ipcRenderer.invoke('install-update'),
-    // === Слушатели событий обновлений ===
     onUpdateChecking: (callback) => {
         const listener = () => callback();
         electron_1.ipcRenderer.on('update-checking', listener);
@@ -53,7 +52,6 @@ const electronAPI = {
         electron_1.ipcRenderer.on('update-downloaded', listener);
         return () => electron_1.ipcRenderer.removeListener('update-downloaded', listener);
     },
-    // === Удаление всех слушателей обновлений ===
     removeAllUpdateListeners: () => {
         electron_1.ipcRenderer.removeAllListeners('update-checking');
         electron_1.ipcRenderer.removeAllListeners('update-available');
